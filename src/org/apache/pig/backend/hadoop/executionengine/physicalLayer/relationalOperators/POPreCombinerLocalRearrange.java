@@ -123,7 +123,7 @@ public class POPreCombinerLocalRearrange extends PhysicalOperator {
         Result inp = null;
         Result res = ERR_RESULT;
         while (true) {
-        	inp = processInput();
+            inp = processInput();
             if (inp.returnStatus == POStatus.STATUS_EOP || inp.returnStatus == POStatus.STATUS_ERR) {
                 break;
             }

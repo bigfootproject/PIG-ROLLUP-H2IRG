@@ -18,7 +18,6 @@
 
 package org.apache.pig.tools.pigstats.mapreduce;
 
-import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -31,24 +30,25 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.mapred.Counters;
+import org.apache.hadoop.mapred.Counters.Counter;
 import org.apache.hadoop.mapred.JobClient;
 import org.apache.hadoop.mapred.JobID;
 import org.apache.hadoop.mapred.RunningJob;
 import org.apache.hadoop.mapred.TaskReport;
-import org.apache.hadoop.mapred.Counters.Counter;
+import org.apache.hadoop.mapred.jobcontrol.Job;
+import org.apache.hadoop.mapreduce.TaskType;
 import org.apache.pig.PigCounters;
-import org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.FileBasedOutputSizeReader;
 import org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.JobControlCompiler;
+import org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.MRConfiguration;
 import org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.MapReduceOper;
-import org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.PigStatsOutputSizeReader;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POStore;
+import org.apache.pig.backend.hadoop.executionengine.shims.HadoopShims;
 import org.apache.pig.classification.InterfaceAudience;
 import org.apache.pig.classification.InterfaceStability;
-import org.apache.pig.newplan.PlanVisitor;
-import org.apache.pig.impl.PigContext;
 import org.apache.pig.impl.io.FileSpec;
 import org.apache.pig.impl.logicalLayer.FrontendException;
 import org.apache.pig.impl.util.ObjectSerializer;
+import org.apache.pig.newplan.PlanVisitor;
 import org.apache.pig.tools.pigstats.InputStats;
 import org.apache.pig.tools.pigstats.JobStats;
 import org.apache.pig.tools.pigstats.OutputStats;
@@ -74,9 +74,6 @@ public final class MRJobStats extends JobStats {
             "MinReduceTime\tAvgReduceTime\tMedianReducetime\tAlias\tFeature\tOutputs";
 
     public static final String FAILURE_HEADER = "JobId\tAlias\tFeature\tMessage\tOutputs";
-
-    // currently counters are not working in local mode - see PIG-1286
-    public static final String SUCCESS_HEADER_LOCAL = "JobId\tAlias\tFeature\tOutputs";
 
     private static final Log LOG = LogFactory.getLog(MRJobStats.class);
 
@@ -118,58 +115,80 @@ public final class MRJobStats extends JobStats {
 
     private Counters counters = null;
 
+    @Override
     public String getJobId() {
         return (jobId == null) ? null : jobId.toString();
     }
 
+    @Override
     public int getNumberMaps() { return numberMaps; }
 
+    @Override
     public int getNumberReduces() { return numberReduces; }
 
+    @Override
     public long getMaxMapTime() { return maxMapTime; }
 
+    @Override
     public long getMinMapTime() { return minMapTime; }
 
+    @Override
     public long getAvgMapTime() { return avgMapTime; }
 
+    @Override
     public long getMaxReduceTime() { return maxReduceTime; }
 
+    @Override
     public long getMinReduceTime() { return minReduceTime; }
 
-    public long getAvgReduceTime() { return avgReduceTime; }
+    @Override
+    public long getAvgREduceTime() { return avgReduceTime; }
 
+    @Override
     public long getMapInputRecords() { return mapInputRecords; }
 
+    @Override
     public long getMapOutputRecords() { return mapOutputRecords; }
 
+    @Override
     public long getReduceInputRecords() { return reduceInputRecords; }
 
+    @Override
     public long getReduceOutputRecords() { return reduceOutputRecords; }
 
+    @Override
     public long getSMMSpillCount() { return spillCount; }
 
+    @Override
     public long getProactiveSpillCountObjects() { return activeSpillCountObj; }
 
+    @Override
     public long getProactiveSpillCountRecs() { return activeSpillCountRecs; }
 
+    @Override
     public Counters getHadoopCounters() { return counters; }
 
+    @Override
     public Map<String, Long> getMultiStoreCounters() {
         return Collections.unmodifiableMap(multiStoreCounters);
     }
 
+    @Override
     public Map<String, Long> getMultiInputCounters() {
         return Collections.unmodifiableMap(multiInputCounters);
     }
 
+    @Override
     public String getAlias() {
         return (String)getAnnotation(ALIAS);
     }
 
+    @Override
     public String getAliasLocation() {
         return (String)getAnnotation(ALIAS_LOCATION);
     }
 
+    @Override
     public String getFeature() {
         return (String)getAnnotation(FEATURE);
     }
@@ -219,10 +238,20 @@ public final class MRJobStats extends JobStats {
         medianReduceTime = median;
     }
 
-    public String getDisplayString(boolean local) {
+    private static void appendStat(long stat, StringBuilder sb) {
+        if(stat != -1) {
+            sb.append(stat/1000);
+        } else {
+            sb.append("n/a");
+        }
+        sb.append("\t");
+    }
+
+    @Override
+    public String getDisplayString() {
         StringBuilder sb = new StringBuilder();
         String id = (jobId == null) ? "N/A" : jobId.toString();
-        if (state == JobState.FAILED || local) {
+        if (state == JobState.FAILED) {
             sb.append(id).append("\t")
                 .append(getAlias()).append("\t")
                 .append(getFeature()).append("\t");
@@ -233,22 +262,15 @@ public final class MRJobStats extends JobStats {
             sb.append(id).append("\t")
                 .append(numberMaps).append("\t")
                 .append(numberReduces).append("\t");
-            if (numberMaps == 0) {
-                sb.append("n/a\t").append("n/a\t").append("n/a\t").append("n/a\t");
-            } else {
-                sb.append(maxMapTime/1000).append("\t")
-                    .append(minMapTime/1000).append("\t")
-                    .append(avgMapTime/1000).append("\t")
-                    .append(medianMapTime/1000).append("\t");
-            }
-            if (numberReduces == 0) {
-                sb.append("n/a\t").append("n/a\t").append("n/a\t").append("n/a\t");
-            } else {
-                sb.append(maxReduceTime/1000).append("\t")
-                    .append(minReduceTime/1000).append("\t")
-                    .append(avgReduceTime/1000).append("\t")
-                    .append(medianReduceTime/1000).append("\t");
-            }
+            appendStat(maxMapTime, sb);
+            appendStat(minMapTime, sb);
+            appendStat(avgMapTime, sb);
+            appendStat(medianMapTime, sb);
+            appendStat(maxReduceTime, sb);
+            appendStat(minReduceTime, sb);
+            appendStat(avgReduceTime, sb);
+            appendStat(medianReduceTime, sb);
+
             sb.append(getAlias()).append("\t")
                 .append(getFeature()).append("\t");
         }
@@ -259,13 +281,11 @@ public final class MRJobStats extends JobStats {
         return sb.toString();
     }
 
-    void addCounters(RunningJob rjob) {
-        if (rjob != null) {
-            try {
-                counters = rjob.getCounters();
-            } catch (IOException e) {
-                LOG.warn("Unable to get job counters", e);
-            }
+    void addCounters(Job job) {
+        try {
+            counters = HadoopShims.getCounters(job);
+        } catch (IOException e) {
+            LOG.warn("Unable to get job counters", e);
         }
         if (counters != null) {
             Counters.Group taskgroup = counters
@@ -312,67 +332,77 @@ public final class MRJobStats extends JobStats {
         }
     }
 
-    void addMapReduceStatistics(JobClient client, Configuration conf) {
+    private class TaskStat {
+        int size;
+        long max;
+        long min;
+        long avg;
+        long median;
+
+        public TaskStat(int size, long max, long min, long avg, long median) {
+            this.size = size;
+            this.max = max;
+            this.min = min;
+            this.avg = avg;
+            this.median = median;
+        }
+    }
+
+    void addMapReduceStatistics(Job job) {
         TaskReport[] maps = null;
         try {
-            maps = client.getMapTaskReports(jobId);
+            maps = HadoopShims.getTaskReports(job, TaskType.MAP);
         } catch (IOException e) {
             LOG.warn("Failed to get map task report", e);
         }
+        TaskReport[] reduces = null;
+        try {
+            reduces = HadoopShims.getTaskReports(job, TaskType.REDUCE);
+        } catch (IOException e) {
+            LOG.warn("Failed to get reduce task report", e);
+        }
+        addMapReduceStatistics(maps, reduces);
+    }
+
+    private TaskStat getTaskStat(TaskReport[] tasks) {
+        int size = tasks.length;
+        long max = 0;
+        long min = Long.MAX_VALUE;
+        long median = 0;
+        long total = 0;
+        long durations[] = new long[size];
+
+        for (int i = 0; i < tasks.length; i++) {
+            TaskReport rpt = tasks[i];
+            long duration = rpt.getFinishTime() - rpt.getStartTime();
+            durations[i] = duration;
+            max = (duration > max) ? duration : max;
+            min = (duration < min) ? duration : min;
+            total += duration;
+        }
+        long avg = total / size;
+
+        median = calculateMedianValue(durations);
+
+        return new TaskStat(size, max, min, avg, median);
+    }
+
+    private void addMapReduceStatistics(TaskReport[] maps, TaskReport[] reduces) {
         if (maps != null && maps.length > 0) {
-            int size = maps.length;
-            long max = 0;
-            long min = Long.MAX_VALUE;
-            long median = 0;
-            long total = 0;
-            long durations[] = new long[size];
-
-            for (int i = 0; i < maps.length; i++) {
-                TaskReport rpt = maps[i];
-                long duration = rpt.getFinishTime() - rpt.getStartTime();
-                durations[i] = duration;
-                max = (duration > max) ? duration : max;
-                min = (duration < min) ? duration : min;
-                total += duration;
-            }
-            long avg = total / size;
-
-            median = calculateMedianValue(durations);
-            setMapStat(size, max, min, avg, median);
+            TaskStat st = getTaskStat(maps);
+            setMapStat(st.size, st.max, st.min, st.avg, st.median);
         } else {
-            int m = conf.getInt("mapred.map.tasks", 1);
+            int m = conf.getInt(MRConfiguration.MAP_TASKS, 1);
             if (m > 0) {
                 setMapStat(m, -1, -1, -1, -1);
             }
         }
 
-        TaskReport[] reduces = null;
-        try {
-            reduces = client.getReduceTaskReports(jobId);
-        } catch (IOException e) {
-            LOG.warn("Failed to get reduce task report", e);
-        }
         if (reduces != null && reduces.length > 0) {
-            int size = reduces.length;
-            long max = 0;
-            long min = Long.MAX_VALUE;
-            long median = 0;
-            long total = 0;
-            long durations[] = new long[size];
-
-            for (int i = 0; i < reduces.length; i++) {
-                TaskReport rpt = reduces[i];
-                long duration = rpt.getFinishTime() - rpt.getStartTime();
-                durations[i] = duration;
-                max = (duration > max) ? duration : max;
-                min = (duration < min) ? duration : min;
-                total += duration;
-            }
-            long avg = total / size;
-            median = calculateMedianValue(durations);
-            setReduceStat(size, max, min, avg, median);
+            TaskStat st = getTaskStat(reduces);
+            setReduceStat(st.size, st.max, st.min, st.avg, st.median);
         } else {
-            int m = conf.getInt("mapred.reduce.tasks", 1);
+            int m = conf.getInt(MRConfiguration.REDUCE_TASKS, 1);
             if (m > 0) {
                 setReduceStat(m, -1, -1, -1, -1);
             }
@@ -418,39 +448,6 @@ public final class MRJobStats extends JobStats {
                 addOneOutputStats(sto);
             }
         }
-    }
-
-    /**
-     * Looks up the output size reader from OUTPUT_SIZE_READER_KEY and invokes
-     * it to get the size of output. If OUTPUT_SIZE_READER_KEY is not set,
-     * defaults to FileBasedOutputSizeReader.
-     * @param sto POStore
-     * @param conf configuration
-     */
-    static long getOutputSize(POStore sto, Configuration conf) {
-        PigStatsOutputSizeReader reader = null;
-        String readerNames = conf.get(
-                PigStatsOutputSizeReader.OUTPUT_SIZE_READER_KEY,
-                FileBasedOutputSizeReader.class.getCanonicalName());
-
-        for (String className : readerNames.split(",")) {
-            reader = (PigStatsOutputSizeReader) PigContext.instantiateFuncFromSpec(className);
-            if (reader.supports(sto)) {
-                LOG.info("using output size reader: " + className);
-                try {
-                    return reader.getOutputSize(sto, conf);
-                } catch (FileNotFoundException e) {
-                    LOG.warn("unable to find the output file", e);
-                    return -1;
-                } catch (IOException e) {
-                    LOG.warn("unable to get byte written of the job", e);
-                    return -1;
-                }
-            }
-        }
-
-        LOG.warn("unable to find an output size reader");
-        return -1;
     }
 
     private void addOneOutputStats(POStore sto) {

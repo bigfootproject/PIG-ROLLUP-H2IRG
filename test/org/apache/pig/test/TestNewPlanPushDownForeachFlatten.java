@@ -17,7 +17,7 @@
  */
 package org.apache.pig.test;
 
-
+import java.io.File;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -49,6 +49,7 @@ import org.apache.pig.newplan.optimizer.PlanOptimizer;
 import org.apache.pig.newplan.optimizer.Rule;
 import org.apache.pig.test.utils.Identity;
 import org.junit.Assert;
+import org.junit.BeforeClass;
 import org.junit.Test;
 
 /**
@@ -56,6 +57,11 @@ import org.junit.Test;
  */
 public class TestNewPlanPushDownForeachFlatten {
     PigContext pc = new PigContext(ExecType.LOCAL, new Properties());
+
+    @BeforeClass
+    public static void oneTimeSetup() throws Exception {
+        new File("dummy").delete();
+    }
 
     /**
      * 
@@ -1214,6 +1220,22 @@ public class TestNewPlanPushDownForeachFlatten {
         Operator sort = newLogicalPlan.getSuccessors( foreach ).get( 0 );
         Assert.assertTrue( sort instanceof LOSort );
         
+    }
+    
+    @Test
+    // See PIG-3826
+    public void testOuterJoin() throws Exception {
+        String query = "A = load 'A.txt' as (id:chararray, value:double);" +
+        "B = load 'B.txt' as (id:chararray, name:chararray);" +
+        "t1 = group A by id;" +
+        "t2 = foreach t1 { r1 = filter $1 by (value>1); r2 = limit r1 1; generate group as id, FLATTEN(r2.value) as value; }" +
+        "t3 = join B by id LEFT OUTER, t2 by id;" +
+        "store t3 into 'output';";
+        LogicalPlan newLogicalPlan = migrateAndOptimizePlan( query );
+        
+        Operator store = newLogicalPlan.getSinks().get( 0 );
+        Operator join = newLogicalPlan.getPredecessors(store).get(0);
+        Assert.assertTrue( join instanceof LOJoin );
     }
 }
 

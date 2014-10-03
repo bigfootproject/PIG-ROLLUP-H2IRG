@@ -18,7 +18,10 @@
 
 package org.apache.pig.backend.hadoop.executionengine.physicalLayer.expressionOperators;
 
-import static org.apache.pig.PigConfiguration.TIME_UDFS_PROP;
+import static org.apache.pig.PigConfiguration.TIME_UDFS;
+import static org.apache.pig.PigConfiguration.TIME_UDFS_FREQUENCY;
+import static org.apache.pig.PigConstants.TIME_UDFS_INVOCATION_COUNTER;
+import static org.apache.pig.PigConstants.TIME_UDFS_ELAPSED_TIME_COUNTER;
 
 import java.io.IOException;
 import java.io.ObjectInputStream;
@@ -59,19 +62,13 @@ import org.apache.pig.impl.util.UDFContext;
 import org.apache.pig.tools.pigstats.PigStatusReporter;
 
 public class POUserFunc extends ExpressionOperator {
+    private static final long serialVersionUID = 1L;
     private static final Log LOG = LogFactory.getLog(POUserFunc.class);
-    private final static String TIMING_COUNTER = "approx_microsecs";
-    private final static String INVOCATION_COUNTER = "approx_invocations";
-    private final static int TIMING_FREQ = 100;
-    private final static TupleFactory tf = TupleFactory.getInstance();
+    private static final TupleFactory tf = TupleFactory.getInstance();
 
     private transient String counterGroup;
-    /**
-     *
-     */
-    private static final long serialVersionUID = 1L;
-    transient EvalFunc func;
-    transient private String[] cacheFiles = null;
+    private transient EvalFunc func;
+    private transient String[] cacheFiles = null;
 
     FuncSpec funcSpec;
     FuncSpec origFSpec;
@@ -87,55 +84,71 @@ public class POUserFunc extends ExpressionOperator {
     private boolean haveCheckedIfTerminatingAccumulator;
 
     private long numInvocations = 0L;
+    private long timingFrequency = 100L;
     private boolean doTiming = false;
 
-    private Boolean rollupH2IRGoptimizable = null;
-    private Integer pivot = null;
-    
-    protected int rollup_position = 0;
-    private Integer rollup_start_position = 0;
-    private Integer dimension_size = 0;
-    
-    public void setPivot(Integer pvt) {
-    	this.pivot = pvt;
+    private static final String ROLLUP_UDF = RollupDimensions.class.getName();
+    private boolean rollupHIIoptimizable = false;
+    //the pivot value
+    private int pivot = -1;
+    //the index of the first field involves in ROLLUP
+    protected int rollupFieldIndex = 0;
+    //the original index of the first field involves in ROLLUP in case it was moved to the end
+    //(if we have the combination of cube and rollup)
+    private int rollupOldFieldIndex = 0;
+    //the size of total fields that involve in CUBE clause
+    private int dimensionSize = 0;
+    //number of algebraic function that used after rollup
+    private int nAlgebraic = 0;
+
+    public void setPivot(int pvt) {
+        this.pivot = pvt;
     }
-    
-    public Integer getPivot() {
-    	return this.pivot;
+
+    public int getPivot() {
+        return this.pivot;
     }
-    
-    public void setDimensionSize(Integer ds) {
-    	this.dimension_size = ds;
+
+    public void setDimensionSize(int ds) {
+        this.dimensionSize = ds;
     }
-    
-    public Integer getDimensionSize() {
-    	return this.dimension_size;
+
+    public int getDimensionSize() {
+        return this.dimensionSize;
     }
-    
-    public void setRollupH2IRGOptimizable(boolean check) {
-    	this.rollupH2IRGoptimizable = check;
+
+    public void setNumberAlgebraic(int na) {
+        this.nAlgebraic = na;
     }
-    
-    public boolean getRollupH2IRGOptimizable() {
-    	return this.rollupH2IRGoptimizable;
+
+    public int getNumberAlgebraic() {
+        return this.nAlgebraic;
     }
-    
-    public void setRollupStartPosition(Integer ru_start_pos) {
-    	this.rollup_start_position = ru_start_pos;
+
+    public void setRollupHIIOptimizable(boolean check) {
+        this.rollupHIIoptimizable = check;
     }
-    
-    public Integer getRollupStartPosition() {
-    	return this.rollup_start_position;
+
+    public boolean getRollupHIIOptimizable() {
+        return this.rollupHIIoptimizable;
     }
-    
-    public void setRollupPosition(Integer ru_pos) {
-    	this.rollup_position = ru_pos;
+
+    public void setRollupOldFieldIndex(int rofi) {
+        this.rollupOldFieldIndex = rofi;
     }
-    
-    public Integer getRollupPosition() {
-    	return this.rollup_position;
+
+    public int getRollupOldFieldIndex() {
+        return this.rollupOldFieldIndex;
     }
-    
+
+    public void setRollupFieldIndex(int rfi) {
+        this.rollupFieldIndex = rfi;
+    }
+
+    public int getRollupFieldIndex() {
+        return this.rollupFieldIndex;
+    }
+
     public PhysicalOperator getReferencedOperator() {
         return referencedOperator;
     }
@@ -145,9 +158,7 @@ public class POUserFunc extends ExpressionOperator {
     }
 
     public POUserFunc(OperatorKey k, int rp, List<PhysicalOperator> inp) {
-        super(k, rp);
-        inputs = inp;
-
+        this(k, rp, inp, null);
     }
 
     public POUserFunc(
@@ -205,8 +216,11 @@ public class POUserFunc extends ExpressionOperator {
             func.setPigLogger(pigLogger);
             Configuration jobConf = UDFContext.getUDFContext().getJobConf();
             if (jobConf != null) {
-                doTiming = "true".equalsIgnoreCase(jobConf.get(TIME_UDFS_PROP, "false"));
-                counterGroup = funcSpec.toString();
+                doTiming = jobConf.getBoolean(TIME_UDFS, false);
+                if (doTiming) {
+                    counterGroup = funcSpec.toString();
+                    timingFrequency = jobConf.getLong(TIME_UDFS_FREQUENCY, 100L);
+                }
             }
             // We initialize here instead of instantiateFunc because this is called
             // when actual processing has begun, whereas a function can be instantiated
@@ -277,8 +291,8 @@ public class POUserFunc extends ExpressionOperator {
                             if (knownSize) {
                                 rslt.set(knownIndex++, trslt.get(i));
                             } else {
-                            rslt.append(trslt.get(i));
-                        }
+                                rslt.append(trslt.get(i));
+                            }
                         }
                         continue;
                     }
@@ -286,8 +300,8 @@ public class POUserFunc extends ExpressionOperator {
                 if (knownSize) {
                     ((Tuple)res.result).set(knownIndex++, temp.result);
                 } else {
-                ((Tuple)res.result).append(temp.result);
-            }
+                    ((Tuple)res.result).append(temp.result);
+                }
             }
             res.returnStatus = temp.returnStatus;
 
@@ -318,26 +332,18 @@ public class POUserFunc extends ExpressionOperator {
     private Result getNext() throws ExecException {
         Result result = processInput();
         long startNanos = 0;
-        boolean timeThis = doTiming && (numInvocations++ % TIMING_FREQ == 0);
+        boolean timeThis = doTiming && (numInvocations++ % timingFrequency == 0);
         if (timeThis) {
             startNanos = System.nanoTime();
-            PigStatusReporter.getInstance().getCounter(counterGroup, INVOCATION_COUNTER).increment(TIMING_FREQ);
-
+            PigStatusReporter.getInstance().incrCounter(counterGroup, TIME_UDFS_INVOCATION_COUNTER, timingFrequency);
         }
         try {
             if(result.returnStatus == POStatus.STATUS_OK) {
                 Tuple t = (Tuple) result.result;
 
                 // For backward compatibility, we short-circuit tuples whose
-                // fields are all null. (See PIG-3679)
-                boolean allNulls = true;
-                for (int i = 0; i < t.size(); i++) {
-                    if (!t.isNull(i)) {
-                        allNulls = false;
-                        break;
-                    }
-                }
-                if (allNulls) {
+                // size is 1 and field is null. (See PIG-3679)
+                if (t.size() == 1 && t.isNull(0)) {
                     pigLogger.warn(this, "All the input values are null, skipping the invocation of UDF",
                             PigWarning.SKIP_UDF_CALL_FOR_NULL);
                     Schema outputSchema = func.outputSchema(func.getInputSchema());
@@ -398,18 +404,20 @@ public class POUserFunc extends ExpressionOperator {
                     if (executor != null) {
                         result.result = executor.monitorExec((Tuple) result.result);
                     } else {
-                    	if(funcSpec.getClassName().toString().equals("org.apache.pig.builtin.RollupDimensions") && this.rollupH2IRGoptimizable!=null) {//&& isOptimized (disable rule)
-                    		if(this.pivot!=null)
-                    			((RollupDimensions)func).setPivot(this.pivot);
-                    			((RollupDimensions)func).setRollupH2IRGOptimizable(this.rollupH2IRGoptimizable);
-                    	}
-                    	result.result = func.exec((Tuple) result.result);
-                    } 
+                        //If this is a ROLLUP UDF and the RollupHIIOptimizer is using
+                        //We set the pivot for this UDF and set rollupHIIOptimizable, so
+                        //the rollup udf can create the tuples due to IRG or IRG+IRG
+                        if (funcSpec.getClassName().equals(ROLLUP_UDF) && this.rollupHIIoptimizable != false) {
+                            ((RollupDimensions) func).setPivot(this.pivot);
+                            ((RollupDimensions) func).setRollupHIIOptimizable(this.rollupHIIoptimizable);
+                        }
+                        result.result = func.exec((Tuple) result.result);
+                    }
                 }
             }
             if (timeThis) {
-                PigStatusReporter.getInstance().getCounter(counterGroup, TIMING_COUNTER).increment(
-                        ( Math.round((System.nanoTime() - startNanos) / 1000)) * TIMING_FREQ);
+                PigStatusReporter.getInstance().incrCounter(counterGroup, TIME_UDFS_ELAPSED_TIME_COUNTER,
+                        Math.round((System.nanoTime() - startNanos) / 1000) * timingFrequency);
             }
             return result;
         } catch (ExecException ee) {
@@ -457,13 +465,11 @@ public class POUserFunc extends ExpressionOperator {
 
     @Override
     public Result getNextBoolean() throws ExecException {
-
         return getNext();
     }
 
     @Override
     public Result getNextDataByteArray() throws ExecException {
-
         return getNext();
     }
 
@@ -613,6 +619,11 @@ public class POUserFunc extends ExpressionOperator {
 
     public FuncSpec getFuncSpec() {
         return funcSpec;
+    }
+    
+    public void setFuncSpec(FuncSpec funcSpec) {
+        this.funcSpec = funcSpec;
+        instantiateFunc(funcSpec);
     }
 
     public String[] getCacheFiles() {

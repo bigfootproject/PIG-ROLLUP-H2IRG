@@ -76,8 +76,8 @@ public class NGramGenerator extends EvalFunc<DataBag> {
          Schema bagSchema = new Schema();
          bagSchema.add(new Schema.FieldSchema("ngram", DataType.CHARARRAY));
          try{
-            return new Schema(new Schema.FieldSchema(getSchemaName(this.getClass().getName().toLowerCase(), input),
-							bagSchema, DataType.BAG));
+            return new Schema(new Schema.FieldSchema(getSchemaName(this.getClass().getName().toLowerCase(), input), 
+                                                    bagSchema, DataType.BAG));
          }catch (FrontendException e){
             return null;
          }

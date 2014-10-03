@@ -80,7 +80,7 @@ public class InputSizeReducerEstimator implements PigReducerEstimator {
         long totalInputFileSize = getTotalInputFileSize(conf, poLoads, job);
 
         log.info("BytesPerReducer=" + bytesPerReducer + " maxReducers="
-        	+ maxReducers + " totalInputFileSize=" + totalInputFileSize);
+            + maxReducers + " totalInputFileSize=" + totalInputFileSize);
 
         // if totalInputFileSize == -1, we couldn't get the input size so we can't estimate.
         if (totalInputFileSize == -1) { return -1; }
@@ -109,7 +109,7 @@ public class InputSizeReducerEstimator implements PigReducerEstimator {
                 // the input file location might be a list of comma separated files,
                 // separate them out
                 for (String location : LoadFunc.getPathStrings(ld.getLFile().getFileName())) {
-                    if (UriUtil.isHDFSFileOrLocalOrS3N(location)) {
+                    if (UriUtil.isHDFSFileOrLocalOrS3N(location, conf)) {
                         Path path = new Path(location);
                         FileSystem fs = path.getFileSystem(conf);
                         FileStatus[] status = fs.globStatus(path);

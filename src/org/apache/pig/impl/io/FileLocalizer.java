@@ -58,6 +58,7 @@ import org.apache.pig.backend.hadoop.datastorage.HDirectory;
 import org.apache.pig.backend.hadoop.datastorage.HPath;
 import org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.PigMapReduce;
 import org.apache.pig.impl.PigContext;
+import org.apache.pig.impl.util.Utils;
 
 import com.google.common.annotations.VisibleForTesting;
 
@@ -428,7 +429,7 @@ public class FileLocalizer {
         return true;
     }
 
-    static Random      r           = new Random();
+    static Random r = new Random();
 
     /**
      * Thread local relativeRoot ContainerDescriptor. Do not access this object
@@ -438,6 +439,8 @@ public class FileLocalizer {
     private static ThreadLocal<ContainerDescriptor> relativeRoot =
         new ThreadLocal<ContainerDescriptor>() {
     };
+
+    private static ContainerDescriptor resourcePath;
 
     /**
      * This method is only used by test code to reset state.
@@ -460,27 +463,60 @@ public class FileLocalizer {
      */
     private static synchronized ContainerDescriptor relativeRoot(final PigContext pigContext)
             throws DataStorageException {
-
         if (relativeRoot.get() == null) {
-            String tdir= pigContext.getProperties().getProperty(PigConfiguration.PIG_TEMP_DIR, "/tmp");
-            ContainerDescriptor relative = pigContext.getDfs().asContainer(tdir + "/temp" + r.nextInt());
+            ContainerDescriptor relative = getTempContainer(pigContext);
             relativeRoot.set(relative);
-            try {
-                if (!relative.exists()) {
-                    createRelativeRoot(relative);
-                }
-            } catch (IOException e) {
-                throw new DataStorageException(e);
-            }
         }
-
         return relativeRoot.get();
     }
 
-    private static void createRelativeRoot(ContainerDescriptor relativeRoot) throws IOException {
-        relativeRoot.create();
-        if (relativeRoot instanceof HDirectory) {
-            ((HDirectory) relativeRoot).setPermission(OWNER_ONLY_PERMS);
+    /**
+     * Accessor method to get the resource ContainerDescriptor used for tez resource
+     * path bound to this thread. Calling this method lazy-initialized the
+     * resourcePath object. This path is different than relativeRoot in that
+     * calling PigServer.shutdown will only remove relativeRoot but not resourthPath
+     * since resourthPath should be available in the entire session
+     *
+     * @param pigContext
+     * @return
+     * @throws DataStorageException
+     */
+    public static synchronized ContainerDescriptor getTemporaryResourcePath(final PigContext pigContext)
+            throws DataStorageException {
+        if (resourcePath == null) {
+            resourcePath = getTempContainer(pigContext);
+        }
+        return resourcePath;
+    }
+
+    private static synchronized ContainerDescriptor getTempContainer(final PigContext pigContext)
+            throws DataStorageException {
+        ContainerDescriptor tempContainer = null;
+        String tdir= Utils.substituteVars(pigContext.getProperties().getProperty(PigConfiguration.PIG_TEMP_DIR, "/tmp"));
+        try {
+            do {
+                tempContainer = pigContext.getDfs().asContainer(tdir + "/temp" + r.nextInt());
+            } while (tempContainer.exists());
+            createContainer(tempContainer);
+        }
+        catch (IOException e) {
+            // try one last time in case this was due IO Exception caused by dir
+            // operations on directory created by another JVM at the same instant
+            tempContainer = pigContext.getDfs().asContainer(tdir + "/temp" + r.nextInt());
+            try {
+                createContainer(tempContainer);
+            }
+            catch (IOException e1) {
+                throw new DataStorageException(e1);
+            }
+        }
+        return tempContainer;
+    }
+
+    private static void createContainer(ContainerDescriptor container) throws IOException {
+        container.create();
+        if (container instanceof HDirectory) {
+            ((HDirectory) container).setPermission(OWNER_ONLY_PERMS);
         }
     }
 
@@ -492,6 +528,16 @@ public class FileLocalizer {
                 log.error(e);
             }
             setInitialized(false);
+        }
+    }
+
+    public static void deleteTempResourceFiles() {
+        if (resourcePath != null) {
+            try {
+                resourcePath.delete();
+            } catch (IOException e) {
+                log.error(e);
+            }
         }
     }
 
@@ -752,7 +798,10 @@ public class FileLocalizer {
         FileSystem srcFs;
         if ( (!"true".equals(properties.getProperty("pig.jars.relative.to.dfs"))
                 && uri.getScheme() == null )||
-                uri.getScheme().equals("local") ) {
+                // For Windows local files
+                (uri.getScheme() == null && uri.getPath().matches("^/[A-Za-z]:.*")) ||
+                (uri.getScheme() != null && uri.getScheme().equals("local")) 
+            ) {
             srcFs = localFs;
         } else {
             srcFs = path.getFileSystem(conf);

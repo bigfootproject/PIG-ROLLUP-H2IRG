@@ -35,7 +35,6 @@ import org.apache.pig.newplan.logical.relational.LOCross;
 import org.apache.pig.newplan.logical.relational.LODistinct;
 import org.apache.pig.newplan.logical.relational.LOFilter;
 import org.apache.pig.newplan.logical.relational.LOForEach;
-import org.apache.pig.newplan.logical.relational.LORollupH2IRGForEach;
 import org.apache.pig.newplan.logical.relational.LOGenerate;
 import org.apache.pig.newplan.logical.relational.LOInnerLoad;
 import org.apache.pig.newplan.logical.relational.LOJoin;
@@ -81,16 +80,6 @@ public class UidResetter extends LogicalRelationalNodesVisitor {
             ExpressionUidResetter fsResetter = new ExpressionUidResetter(joinPlan);
             fsResetter.visit();
         }
-    }
-    
-    @Override
-    public void visit(LORollupH2IRGForEach hforeach) throws FrontendException {
-        hforeach.resetUid();
-        OperatorPlan innerPlan = hforeach.getInnerPlan();
-        PlanWalker newWalker = currentWalker.spawnChildWalker(innerPlan);
-        pushWalker(newWalker);
-        currentWalker.walk(this);
-        popWalker();
     }
     
     @Override

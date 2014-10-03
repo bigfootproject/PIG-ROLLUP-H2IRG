@@ -230,7 +230,7 @@ public class POForEach extends PhysicalOperator {
                         return res;
                     }
                     if(res.returnStatus==POStatus.STATUS_NULL) {
-                    	continue;
+                        continue;
                     }
                 }
             }
@@ -239,7 +239,7 @@ public class POForEach extends PhysicalOperator {
             //nested plan processing on the input tuple
             //read
             while (true) {
-            	inp = processInput();
+                inp = processInput();
                 if (inp.returnStatus == POStatus.STATUS_EOP ||
                         inp.returnStatus == POStatus.STATUS_ERR) {
                     return inp;

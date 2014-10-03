@@ -39,7 +39,6 @@ import org.apache.pig.newplan.logical.relational.LOCube;
 import org.apache.pig.newplan.logical.relational.LODistinct;
 import org.apache.pig.newplan.logical.relational.LOFilter;
 import org.apache.pig.newplan.logical.relational.LOForEach;
-import org.apache.pig.newplan.logical.relational.LORollupH2IRGForEach;
 import org.apache.pig.newplan.logical.relational.LOGenerate;
 import org.apache.pig.newplan.logical.relational.LOInnerLoad;
 import org.apache.pig.newplan.logical.relational.LOJoin;
@@ -115,17 +114,6 @@ public class SchemaResetter extends LogicalRelationalNodesVisitor {
         currentWalker.walk(this);
         popWalker();
         validate(foreach.getSchema());
-    }
-    
-    @Override
-    public void visit(LORollupH2IRGForEach hforeach) throws FrontendException {
-        hforeach.resetSchema();
-        OperatorPlan innerPlan = hforeach.getInnerPlan();
-        PlanWalker newWalker = currentWalker.spawnChildWalker(innerPlan);
-        pushWalker(newWalker);
-        currentWalker.walk(this);
-        popWalker();
-        validate(hforeach.getSchema());
     }
     
     @Override

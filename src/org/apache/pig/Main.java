@@ -29,6 +29,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.io.StringReader;
+import java.io.Writer;
 import java.text.ParseException;
 import java.util.AbstractList;
 import java.util.ArrayList;
@@ -86,6 +87,16 @@ import org.apache.pig.tools.timer.PerformanceTimerFactory;
 @InterfaceStability.Stable
 public class Main {
 
+    static {
+        Runtime.getRuntime().addShutdownHook(new Thread() {
+
+            @Override
+            public void run() {
+                FileLocalizer.deleteTempResourceFiles();
+            }
+        });
+    }
+
     private final static Log log = LogFactory.getLog(Main.class);
 
     private static final String LOG4J_CONF = "log4jconf";
@@ -101,9 +112,6 @@ public class Main {
     private static final String buildTime;
 
     private enum ExecMode {STRING, FILE, SHELL, UNKNOWN}
-
-    private static final String PROP_FILT_SIMPL_OPT
-        = "pig.exec.filterLogicExpressionSimplifier";
 
     protected static final String PROGRESS_NOTIFICATION_LISTENER_KEY = "pig.notification.listener";
 
@@ -298,7 +306,7 @@ public class Main {
 
                 case 'M':
                     // turns off multiquery optimization
-                    properties.setProperty("opt.multiquery",""+false);
+                    properties.setProperty(PigConfiguration.OPT_MULTIQUERY,""+false);
                     break;
 
                 case 'N':
@@ -390,11 +398,6 @@ public class Main {
 
             deleteTempFiles = Boolean.valueOf(properties.getProperty(
                     PigConfiguration.PIG_DELETE_TEMP_FILE, "true"));
-
-            if( ! Boolean.valueOf(properties.getProperty(PROP_FILT_SIMPL_OPT, "false"))){
-                //turn off if the user has not explicitly turned on this optimization
-                disabledOptimizerRules.add("FilterLogicExpressionSimplifier");
-            }
 
             pigContext.getProperties().setProperty(PigImplConstants.PIG_OPTIMIZER_RULES_KEY,
                     ObjectSerializer.serialize(disabledOptimizerRules));
@@ -530,7 +533,7 @@ public class Main {
                 // Interactive
                 mode = ExecMode.SHELL;
               //Reader is created by first loading "pig.load.default.statements" or .pigbootup file if available
-                ConsoleReader reader = new ConsoleReader(Utils.getCompositeStream(System.in, properties), new OutputStreamWriter(System.out));
+                ConsoleReader reader = new ConsoleReaderWithParamSub(Utils.getCompositeStream(System.in, properties), new OutputStreamWriter(System.out), pigContext);
                 reader.setDefaultPrompt("grunt> ");
                 final String HISTORYFILE = ".pig_history";
                 String historyFile = System.getProperty("user.home") + File.separator  + HISTORYFILE;
@@ -852,6 +855,7 @@ public class Main {
             System.out.println("    -p, -param - Key value pair of the form param=val");
             System.out.println("    -r, -dryrun - Produces script with substituted parameters. Script is not executed.");
             System.out.println("    -t, -optimizer_off - Turn optimizations off. The following values are supported:");
+            System.out.println("            ConstantCalculator - Calculate constants at compile time");
             System.out.println("            SplitFilter - Split filter conditions");
             System.out.println("            PushUpFilter - Filter as early as possible");
             System.out.println("            MergeFilter - Merge filter conditions");
@@ -861,6 +865,9 @@ public class Main {
             System.out.println("            AddForEach - Add ForEach to remove unneeded columns");
             System.out.println("            MergeForEach - Merge adjacent ForEach");
             System.out.println("            GroupByConstParallelSetter - Force parallel 1 for \"group all\" statement");
+            System.out.println("            PartitionFilterOptimizer - Pushdown partition filter conditions to loader implementing LoadMetaData");
+            System.out.println("            PredicatePushdownOptimizer - Pushdown filter predicates to loader implementing LoadPredicatePushDown");
+            System.out.println("            RollupHIIOptimizer - Apply Rollup HII optimization");
             System.out.println("            All - Disable all optimizations");
             System.out.println("        All optimizations listed here are enabled by default. Optimization values are case insensitive.");
             System.out.println("    -v, -verbose - Print all error messages to screen");
@@ -905,8 +912,6 @@ public class Main {
             System.out.println("        pig.exec.mapPartAgg.minReduction=<min aggregation factor>. Default is 10.");
             System.out.println("            If the in-map partial aggregation does not reduce the output num records");
             System.out.println("            by this factor, it gets disabled.");
-            System.out.println("        " + PROP_FILT_SIMPL_OPT + "=true|false; Default is false.");
-            System.out.println("            Enable optimizer rules to simplify filter expressions.");
             System.out.println("    Miscellaneous:");
             System.out.println("        exectype=mapreduce|local; default is mapreduce. This property is the same as -x switch");
             System.out.println("        pig.additional.jars=<colon seperated list of jars>. Used in place of register command.");
@@ -1038,6 +1043,25 @@ public class Main {
         return (totalCount > 0 && failCount == totalCount) ? ReturnCode.FAILURE
                 : (failCount > 0) ? ReturnCode.PARTIAL_FAILURE
                         : ReturnCode.SUCCESS;
+    }
+
+    static class ConsoleReaderWithParamSub extends ConsoleReader {
+        PigContext pc;
+        ConsoleReaderWithParamSub(InputStream in, Writer out, PigContext pigContext) throws IOException {
+            super(in, out);
+            pc = pigContext;
+        }
+
+        @Override
+        public String readLine() throws IOException {
+            String line = super.readLine();
+            if (null == line) {
+                return line;
+            }
+            String paramSubLine = pc.doParamSubstitution(new BufferedReader(new StringReader(line)));
+            return paramSubLine;
+        }
+
     }
 
 }

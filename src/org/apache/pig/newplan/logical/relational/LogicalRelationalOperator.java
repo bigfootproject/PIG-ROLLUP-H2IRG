@@ -132,7 +132,7 @@ abstract public class LogicalRelationalOperator extends Operator {
     public void setRequestedParallelism(int parallel) {
         this.requestedParallelism = parallel;
     }
-    
+
     /**
      * Get the line number in the submitted Pig Latin script where this operator
      * occurred.

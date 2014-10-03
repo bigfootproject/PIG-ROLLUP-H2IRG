@@ -35,7 +35,6 @@ import org.apache.pig.newplan.logical.relational.LOCogroup;
 import org.apache.pig.newplan.logical.relational.LOFilter;
 import org.apache.pig.newplan.logical.relational.LOForEach;
 import org.apache.pig.newplan.logical.relational.LOGenerate;
-import org.apache.pig.newplan.logical.relational.LORollupH2IRGForEach;
 import org.apache.pig.newplan.logical.relational.LOJoin;
 import org.apache.pig.newplan.logical.relational.LOLimit;
 import org.apache.pig.newplan.logical.relational.LOLoad;
@@ -141,9 +140,6 @@ public class DotLOPrinter extends DotPlanDumper {
         else if(op instanceof LOForEach){
             plans.add(((LOForEach)op).getInnerPlan());
         }
-    	else if (op instanceof LORollupH2IRGForEach) {
-    		plans.add(((LORollupH2IRGForEach) op).getInnerPlan());
-    	}
         else if(op instanceof LOGenerate){
             plans.addAll(((LOGenerate)op).getOutputPlans());
         }

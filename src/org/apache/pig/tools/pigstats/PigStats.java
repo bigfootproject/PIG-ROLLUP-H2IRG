@@ -109,6 +109,7 @@ public abstract class PigStats {
         return errorThrowable;
     }
 
+    @Deprecated
     public abstract JobClient getJobClient();
 
     public abstract boolean isEmbedded();
@@ -468,7 +469,7 @@ public abstract class PigStats {
     public void setBackendException(String jobId, Exception e) {
         if (e instanceof PigException) {
             LOG.error("ERROR " + ((PigException)e).getErrorCode() + ": "
-            		+ e.getLocalizedMessage());
+                    + e.getLocalizedMessage());
         } else if (e != null) {
             LOG.error("ERROR: " + e.getLocalizedMessage());
         }

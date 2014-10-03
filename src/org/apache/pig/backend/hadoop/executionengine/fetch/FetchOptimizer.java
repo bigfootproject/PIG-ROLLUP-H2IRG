@@ -32,19 +32,17 @@ import org.apache.pig.backend.hadoop.executionengine.physicalLayer.PhysicalOpera
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.plans.PhyPlanVisitor;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.plans.PhysicalPlan;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POCollectedGroup;
-import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POCombinerPackage;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POCounter;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POCross;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.PODemux;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.PODistinct;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POFRJoin;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POGlobalRearrange;
-import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POJoinPackage;
+import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POLimit;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POLoad;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POLocalRearrange;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POMergeCogroup;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POMergeJoin;
-import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POMultiQueryPackage;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.PONative;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POOptimizedForEach;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POPackage;
@@ -98,8 +96,12 @@ public class FetchOptimizer {
         if (isEligible(pc, pp)) {
             FetchablePlanVisitor fpv = new FetchablePlanVisitor(pc, pp);
             fpv.visit();
-            boolean isFetchable = fpv.isPlanFetchable();
-            //initialization
+            // Plan is fetchable only if FetchablePlanVisitor returns true AND
+            // limit is present in the plan. Limit is a safeguard. If the input
+            // is large, and there is no limit, fetch optimizer will fetch the
+            // entire input to the client. That can be dangerous.
+            boolean isFetchable = fpv.isPlanFetchable() && 
+                    PlanHelper.containsPhysicalOperator(pp, POLimit.class);
             if (isFetchable)
                 init(pp);
             return isFetchable;
@@ -231,16 +233,6 @@ public class FetchOptimizer {
         }
 
         @Override
-        public void visitCombinerPackage(POCombinerPackage pkg) throws VisitorException {
-            planFetchable = false;
-        }
-
-        @Override
-        public void visitMultiQueryPackage(POMultiQueryPackage pkg) throws VisitorException {
-            planFetchable = false;
-        }
-
-        @Override
         public void visitSplit(POSplit spl) throws VisitorException {
             planFetchable = false;
         }
@@ -267,11 +259,6 @@ public class FetchOptimizer {
 
         @Override
         public void visitSort(POSort sort) throws VisitorException {
-            planFetchable = false;
-        }
-
-        @Override
-        public void visitJoinPackage(POJoinPackage joinPackage) throws VisitorException {
             planFetchable = false;
         }
 
@@ -325,7 +312,7 @@ public class FetchOptimizer {
         private boolean isPlanFetchable() {
             return planFetchable;
         }
-        
+
         private boolean isTempPath(String basePathName) throws DataStorageException {
             String tdir = pc.getProperties().getProperty("pig.temp.dir", "/tmp");
             String tempStore = pc.getDfs().asContainer(tdir + "/temp").toString();

@@ -40,7 +40,7 @@ public class LOGenerate extends LogicalRelationalOperator {
      // If LOGenerate generate new uid, cache it here.
      // This happens when expression plan does not have complete schema, however,
      // user give complete schema in ForEach statement in script
-     private List<LogicalSchema> uidOnlySchemas = null;     
+     private List<LogicalSchema> uidOnlySchemas = null;
 
     public LOGenerate(OperatorPlan plan, List<LogicalExpressionPlan> ps, boolean[] flatten) {
         this( plan );

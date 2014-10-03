@@ -181,12 +181,6 @@ public class GenPhyOp{
         return ret;
     }
 
-    public static PORollupH2IRGForEach topForEachOp() {
-        PORollupH2IRGForEach ret = new PORollupH2IRGForEach(new OperatorKey("", r
-                .nextLong()));
-        return ret;
-    }
-    
     public static POUnion topUnionOp() {
         POUnion ret = new POUnion(new OperatorKey("", r.nextLong()));
         return ret;
@@ -521,16 +515,6 @@ public class GenPhyOp{
         return ret;
     }
 
-    public static PORollupH2IRGForEach topRollupH2IRGForEachOPWithPlan(int field, Tuple sample) throws ExecException, PlanException{
-        PlansAndFlattens pf = topGenerateOpWithExPlanForFe(field, sample);
-        
-        PORollupH2IRGForEach ret = topRollupH2IRGForEachOp();
-        ret.setInputPlans(pf.plans);
-        ret.setToBeFlattened(pf.flattens);
-        ret.setResultType(DataType.TUPLE);
-        return ret;
-    }
-    
     /**
      * creates the POForEach operator for
      * foreach A generate field[0] field[1]
@@ -543,16 +527,6 @@ public class GenPhyOp{
         PlansAndFlattens pf = topGenerateOpWithExPlanForFe(fields, sample);
         
         POForEach ret = topForEachOp();
-        ret.setInputPlans(pf.plans);
-        ret.setToBeFlattened(pf.flattens);
-        ret.setResultType(DataType.TUPLE);
-        return ret;
-    }
-    
-    public static PORollupH2IRGForEach topRollupH2IRGForEachOPWithPlan(int[] fields, Tuple sample) throws ExecException, PlanException{
-        PlansAndFlattens pf = topGenerateOpWithExPlanForFe(fields, sample);
-        
-        PORollupH2IRGForEach ret = topRollupH2IRGForEachOp();
         ret.setInputPlans(pf.plans);
         ret.setToBeFlattened(pf.flattens);
         ret.setResultType(DataType.TUPLE);
@@ -581,20 +555,6 @@ public class GenPhyOp{
         return ret;
     }
     
-    public static PORollupH2IRGForEach topRollupH2IRGForEachOPWithPlan(
-            int[] fields,
-            Tuple sample,
-            List<Boolean> toBeFlattened) throws ExecException, PlanException{
-        PlansAndFlattens pf =
-            topGenerateOpWithExPlanForFe(fields, sample, toBeFlattened);
-        
-        PORollupH2IRGForEach ret = topRollupH2IRGForEachOp();
-        ret.setInputPlans(pf.plans);
-        ret.setToBeFlattened(toBeFlattened);
-        ret.setResultType(DataType.TUPLE);
-        return ret;
-    }
-    
     /**
      * creates the POForEach operator for
      * foreach A generate flatten(field)
@@ -612,19 +572,6 @@ public class GenPhyOp{
         ret.setResultType(DataType.TUPLE);
         return ret;
     }
-    
-    public static PORollupH2IRGForEach topRollupH2IRGForEachOPWithPlan(int field) throws ExecException, PlanException{
-        PlansAndFlattens pf = topGenerateOpWithExPlanForFeFlat(field);
-        
-        PORollupH2IRGForEach ret = topRollupH2IRGForEachOp();
-        ret.setInputPlans(pf.plans);
-        ret.setToBeFlattened(pf.flattens);
-        ret.setResultType(DataType.TUPLE);
-        return ret;
-    }
-    
-    //ADD
-    
 
     
     public static POLoad topLoadOp() {

@@ -18,6 +18,7 @@
 package org.apache.pig.backend.hadoop.executionengine.mapReduceLayer;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -60,6 +61,7 @@ import org.apache.hadoop.mapred.jobcontrol.Job;
 import org.apache.hadoop.mapred.jobcontrol.JobControl;
 import org.apache.pig.ComparisonFunc;
 import org.apache.pig.ExecType;
+import org.apache.pig.FuncSpec;
 import org.apache.pig.LoadFunc;
 import org.apache.pig.OverwritableStoreFunc;
 import org.apache.pig.PigConfiguration;
@@ -68,6 +70,8 @@ import org.apache.pig.StoreFuncInterface;
 import org.apache.pig.backend.executionengine.ExecException;
 import org.apache.pig.backend.hadoop.HDataType;
 import org.apache.pig.backend.hadoop.datastorage.ConfigurationUtil;
+import org.apache.pig.backend.hadoop.executionengine.JobCreationException;
+import org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.partitioners.RollupHIIPartitioner;
 import org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.partitioners.SecondaryKeyPartitioner;
 import org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.partitioners.SkewedPartitioner;
 import org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.partitioners.WeightedRangePartitioner;
@@ -78,13 +82,10 @@ import org.apache.pig.backend.hadoop.executionengine.physicalLayer.expressionOpe
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.plans.PhyPlanVisitor;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.plans.PhysicalPlan;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POFRJoin;
-import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POForEach;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POLoad;
-import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POLocalRearrange;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POMergeCogroup;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POMergeJoin;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POPackage;
-import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.PORollupH2IRGForEach;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POStore;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.util.PlanHelper;
 import org.apache.pig.backend.hadoop.executionengine.shims.HadoopShims;
@@ -96,6 +97,7 @@ import org.apache.pig.data.Tuple;
 import org.apache.pig.data.TupleFactory;
 import org.apache.pig.impl.PigContext;
 import org.apache.pig.impl.PigImplConstants;
+import org.apache.pig.impl.builtin.GFCross;
 import org.apache.pig.impl.io.FileLocalizer;
 import org.apache.pig.impl.io.FileSpec;
 import org.apache.pig.impl.io.NullableBigDecimalWritable;
@@ -183,6 +185,8 @@ public class JobControlCompiler{
      */
     public static final String PIG_MAP_STORES = "pig.map.stores";
     public static final String PIG_REDUCE_STORES = "pig.reduce.stores";
+
+    private static final String ROLLUP_PARTITIONER = RollupHIIPartitioner.class.getName();
 
     // A mapping of job to pair of store locations and tmp locations for that job
     private Map<Job, Pair<List<POStore>, Path>> jobStoreMap;
@@ -453,7 +457,7 @@ public class JobControlCompiler{
             return false;
         }
 
-        int reducers = conf.getInt("mapred.reduce.tasks", 1);
+        int reducers = conf.getInt(MRConfiguration.REDUCE_TASKS, 1);
         log.info("No of reducers: " + reducers);
         if (reducers > 1) {
             return false;
@@ -510,50 +514,24 @@ public class JobControlCompiler{
             ss.addSettingsToConf(mro, conf);
         }
 
-        conf.set("mapred.mapper.new-api", "true");
-        conf.set("mapred.reducer.new-api", "true");
+        conf.set(MRConfiguration.MAPPER_NEW_API, "true");
+        conf.set(MRConfiguration.REDUCER_NEW_API, "true");
 
-        String buffPercent = conf.get("mapred.job.reduce.markreset.buffer.percent");
+        String buffPercent = conf.get(MRConfiguration.JOB_REDUCE_MARKRESET_BUFFER_PERCENT);
         if (buffPercent == null || Double.parseDouble(buffPercent) <= 0) {
-            log.info("mapred.job.reduce.markreset.buffer.percent is not set, set to default 0.3");
-            conf.set("mapred.job.reduce.markreset.buffer.percent", "0.3");
+            log.info(MRConfiguration.JOB_REDUCE_MARKRESET_BUFFER_PERCENT + " is not set, set to default 0.3");
+            conf.set(MRConfiguration.JOB_REDUCE_MARKRESET_BUFFER_PERCENT, "0.3");
         }else{
-            log.info("mapred.job.reduce.markreset.buffer.percent is set to " + conf.get("mapred.job.reduce.markreset.buffer.percent"));
+            log.info(MRConfiguration.JOB_REDUCE_MARKRESET_BUFFER_PERCENT + " is set to " +
+                     conf.get(MRConfiguration.JOB_REDUCE_MARKRESET_BUFFER_PERCENT));
         }
 
-        // Convert mapred.output.* to output.compression.*, See PIG-1791
-        if( "true".equals( conf.get( "mapred.output.compress" ) ) ) {
-            conf.set( "output.compression.enabled",  "true" );
-            String codec = conf.get( "mapred.output.compression.codec" );
-            if( codec == null ) {
-                throw new JobCreationException("'mapred.output.compress' is set but no value is specified for 'mapred.output.compression.codec'." );
-            } else {
-                conf.set( "output.compression.codec", codec );
-            }
-        }
+        configureCompression(conf);
 
         try{
-        	//check and setPivot for RollupH2IRGPartitioner
-        	conf.set("rollup.h2irg.foreach", "0");
-        	if(mro.customPartitioner!=null && mro.customPartitioner.equals("org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.partitioners.RollupH2IRGPartitioner")) {
-        		
-        		conf.set("rollup.h2irg.foreach", "1");
-        		
-        		int len = 0;
-        		
-            	LinkedList<POUserFunc> mapUF = PlanHelper.getPhysicalOperators(mro.mapPlan, POUserFunc.class);
-        		for(POUserFunc uf : mapUF) {
-        			if(uf.getFuncSpec().getClassName().equals("org.apache.pig.builtin.RollupDimensions"))
-        				//Setup the pivot position in the configuration for the partitioner
-        				if(uf.getPivot()!=null) {
-        					conf.set("rollup.h2irg.pivot", uf.getPivot().toString());
-        				conf.set("rollup.h2irg.rollup_position", uf.getRollupPosition().toString());
-        				conf.set("rollup.h2irg.rollup_start_position", uf.getRollupStartPosition().toString());
-        				conf.set("rollup.h2irg.dimension_size", uf.getDimensionSize().toString());
-        				}
-        		}
-        	}
-        	
+            //Set default value for PIG_HII_ROLLUP_OPTIMIZABLE to false
+            conf.setBoolean(PigConfiguration.PIG_HII_ROLLUP_OPTIMIZABLE, false);
+
             //Process the POLoads
             List<POLoad> lds = PlanHelper.getPhysicalOperators(mro.mapPlan, POLoad.class);
 
@@ -572,6 +550,22 @@ public class JobControlCompiler{
                 adjustNumReducers(plan, mro, nwJob);
             } else {
                 nwJob.setNumReduceTasks(0);
+            }
+
+            for (String udf : mro.UDFs) {
+                if (udf.contains("GFCross")) {
+                    Object func = pigContext.instantiateFuncFromSpec(new FuncSpec(udf));
+                    if (func instanceof GFCross) {
+                        String crossKey = ((GFCross)func).getCrossKey();
+                        // If non GFCross has been processed yet
+                        if (pigContext.getProperties().get(PigConfiguration.PIG_CROSS_PARALLELISM_HINT + "." + crossKey)==null) {
+                            pigContext.getProperties().setProperty(PigConfiguration.PIG_CROSS_PARALLELISM_HINT + "." + crossKey,
+                                    Integer.toString(nwJob.getNumReduceTasks()));
+                        }
+                        conf.set(PigConfiguration.PIG_CROSS_PARALLELISM_HINT + "." + crossKey,
+                                (String)pigContext.getProperties().get(PigConfiguration.PIG_CROSS_PARALLELISM_HINT + "." + crossKey));
+                    }
+                }
             }
 
             if(lds!=null && lds.size()>0){
@@ -601,7 +595,7 @@ public class JobControlCompiler{
                     // override with the default conf to run in local mode
                     for (Entry<String, String> entry : defaultConf) {
                         String key = entry.getKey();
-                        if (key.equals("mapred.reduce.tasks")) {
+                        if (key.equals(MRConfiguration.REDUCE_TASKS) || key.equals(MRConfiguration.JOB_REDUCES)) {
                             // this must not be set back to the default in case it has been set to 0 for example.
                             continue;
                         }
@@ -623,26 +617,45 @@ public class JobControlCompiler{
                 } else {
                     log.info(BIG_JOB_LOG_MSG);
                     // Setup the DistributedCache for this job
+                    List<URL> allJars = new ArrayList<URL>();
+
                     for (URL extraJar : pigContext.extraJars) {
-                        log.debug("Adding jar to DistributedCache: " + extraJar.toString());
-                        putJarOnClassPathThroughDistributedCache(pigContext, conf, extraJar);
+                        if (!allJars.contains(extraJar)) {
+                            allJars.add(extraJar);
+                        }
                     }
 
                     for (String scriptJar : pigContext.scriptJars) {
-                        log.debug("Adding jar to DistributedCache: " + scriptJar.toString());
-                        putJarOnClassPathThroughDistributedCache(pigContext, conf, new File(scriptJar).toURI().toURL());
+                        URL jar = new File(scriptJar).toURI().toURL();
+                        if (!allJars.contains(jar)) {
+                            allJars.add(jar);
+                        }
                     }
 
-                    //Create the jar of all functions and classes required
-                    File submitJarFile = File.createTempFile("Job", ".jar");
-                    log.info("creating jar file "+submitJarFile.getName());
-                    // ensure the job jar is deleted on exit
-                    submitJarFile.deleteOnExit();
-                    FileOutputStream fos = new FileOutputStream(submitJarFile);
-                    JarManager.createJar(fos, mro.UDFs, pigContext);
-                    log.info("jar file "+submitJarFile.getName()+" created");
-                    //Start setting the JobConf properties
-                    conf.set("mapred.jar", submitJarFile.getPath());
+                    for (String defaultJar : JarManager.getDefaultJars()) {
+                        URL jar = new File(defaultJar).toURI().toURL();
+                        if (!allJars.contains(jar)) {
+                            allJars.add(jar);
+                        }
+                    }
+
+                    for (URL jar : allJars) {
+                        boolean predeployed = false;
+                        for (String predeployedJar : pigContext.predeployedJars) {
+                            if (predeployedJar.contains(new File(jar.toURI()).getName())) {
+                                predeployed = true;
+                            }
+                        }
+                        if (!predeployed) {
+                            log.info("Adding jar to DistributedCache: " + jar);
+                            putJarOnClassPathThroughDistributedCache(pigContext, conf, jar);
+                        }
+                    }
+
+                    File scriptUDFJarFile = JarManager.createPigScriptUDFJar(pigContext);
+                    if (scriptUDFJarFile != null) {
+                        putJarOnClassPathThroughDistributedCache(pigContext, conf, scriptUDFJarFile.toURI().toURL());
+                    }
                 }
             }
 
@@ -658,7 +671,7 @@ public class JobControlCompiler{
             // this is for unit tests since some don't create PigServer
 
             // if user specified the job name using -D switch, Pig won't reset the name then.
-            if (System.getProperty("mapred.job.name") == null &&
+            if (System.getProperty(MRConfiguration.JOB_NAME) == null &&
                     pigContext.getProperties().getProperty(PigContext.JOB_NAME) != null){
                 nwJob.setJobName(pigContext.getProperties().getProperty(PigContext.JOB_NAME));
             }
@@ -669,7 +682,7 @@ public class JobControlCompiler{
                 String jobPriority = pigContext.getProperties().getProperty(PigContext.JOB_PRIORITY).toUpperCase();
                 try {
                     // Allow arbitrary case; the Hadoop job priorities are all upper case.
-                    conf.set("mapred.job.priority", JobPriority.valueOf(jobPriority).toString());
+                    conf.set(MRConfiguration.JOB_PRIORITY, JobPriority.valueOf(jobPriority).toString());
 
                 } catch (IllegalArgumentException e) {
                     StringBuffer sb = new StringBuffer("The job priority must be one of [");
@@ -722,26 +735,7 @@ public class JobControlCompiler{
                 }
             }
 
-            // the OutputFormat we report to Hadoop is always PigOutputFormat which
-            // can be wrapped with LazyOutputFormat provided if it is supported by
-            // the Hadoop version and PigConfiguration.PIG_OUTPUT_LAZY is set 
-            if ("true".equalsIgnoreCase(conf.get(PigConfiguration.PIG_OUTPUT_LAZY))) {
-                try {
-                    Class<?> clazz = PigContext.resolveClassName(
-                            "org.apache.hadoop.mapreduce.lib.output.LazyOutputFormat");
-                    Method method = clazz.getMethod("setOutputFormatClass", nwJob.getClass(),
-                            Class.class);
-                    method.invoke(null, nwJob, PigOutputFormat.class);
-                }
-                catch (Exception e) {
-                    nwJob.setOutputFormatClass(PigOutputFormat.class);
-                    log.warn(PigConfiguration.PIG_OUTPUT_LAZY
-                    		+ " is set but LazyOutputFormat couldn't be loaded. Default PigOutputFormat will be used");
-                }
-            }
-            else {
-                nwJob.setOutputFormatClass(PigOutputFormat.class);
-            }
+            setOutputFormat(nwJob);
 
             if (mapStores.size() + reduceStores.size() == 1) { // single store case
                 log.info("Setting up single store job");
@@ -757,7 +751,7 @@ public class JobControlCompiler{
                     if(!pigContext.inIllustrator)
                         mro.reducePlan.remove(st);
                 }
-                
+
                 MapRedUtil.setupStreamingDirsConfSingle(st, pigContext, conf);
             }
             else if (mapStores.size() + reduceStores.size() > 0) { // multi store case
@@ -824,13 +818,44 @@ public class JobControlCompiler{
                     log.info("Setting identity combiner class.");
                 }
                 pack = (POPackage)mro.reducePlan.getRoots().get(0);
+
+                if(pack!=null) {
+                    if(pack.getPivot()!=-1) {
+                            //Set value for PIG_HII_ROLLUP_OPTIMIZABLE to true
+                            conf.setBoolean(PigConfiguration.PIG_HII_ROLLUP_OPTIMIZABLE, true);
+                            //Set the pivot value
+                            conf.setInt(PigConfiguration.PIG_HII_ROLLUP_PIVOT, pack.getPivot());
+                            //Set the index of the first field involves in ROLLUP
+                            conf.setInt(PigConfiguration.PIG_HII_ROLLUP_FIELD_INDEX, pack.getRollupFieldIndex());
+                            //Set the original index of the first field involves in ROLLUP in case it was moved to the end
+                            //(if we have the combination of cube and rollup)
+                            conf.setInt(PigConfiguration.PIG_HII_ROLLUP_OLD_FIELD_INDEX, pack.getRollupOldFieldIndex());
+                            //Set the size of total fields that involve in CUBE clause
+                            conf.setInt(PigConfiguration.PIG_HII_NUMBER_TOTAL_FIELD, pack.getDimensionSize());
+                            //Set number of algebraic functions that used after rollup
+                            conf.setInt(PigConfiguration.PIG_HII_NUMBER_ALGEBRAIC, pack.getNumberAlgebraic());
+                            //Set number of reducer to 1 due to using IRG algorithm
+                            if(pack.getPivot() == 0 && !mro.reducePlan.isEmpty()) {
+                                updateNumReducers(plan, mro, nwJob);
+                            }
+                    }
+                }
+
                 if(!pigContext.inIllustrator)
                     mro.reducePlan.remove(pack);
                 nwJob.setMapperClass(PigMapReduce.Map.class);
                 nwJob.setReducerClass(PigMapReduce.Reduce.class);
 
-                if (mro.customPartitioner != null)
-                    nwJob.setPartitionerClass(PigContext.resolveClassName(mro.customPartitioner));
+                // Set Rollup Partitioner in case the pivot is not equal to -1
+                // and the custormPartitioner name is our rollup partitioner.
+                if (mro.customPartitioner != null) {
+                    if(mro.customPartitioner.equals(ROLLUP_PARTITIONER)){
+                        if(pack.getPivot()!=-1)
+                            nwJob.setPartitionerClass(PigContext.resolveClassName(mro.customPartitioner));
+                    } else {
+                        nwJob.setPartitionerClass(PigContext.resolveClassName(mro.customPartitioner));
+                    }
+                }
 
                 if(!pigContext.inIllustrator)
                     conf.set("pig.mapPlan", ObjectSerializer.serialize(mro.mapPlan));
@@ -850,7 +875,8 @@ public class JobControlCompiler{
                 }
                 if (!pigContext.inIllustrator)
                     conf.set("pig.reduce.package", ObjectSerializer.serialize(pack));
-                conf.set("pig.reduce.key.type", Byte.toString(pack.getKeyType()));
+                conf.set("pig.reduce.key.type",
+                        Byte.toString(pack.getPkgr().getKeyType()));
 
                 if (mro.getUseSecondaryKey()) {
                     nwJob.setGroupingComparatorClass(PigSecondaryKeyGroupComparator.class);
@@ -863,16 +889,16 @@ public class JobControlCompiler{
                 }
                 else
                 {
-                    Class<? extends WritableComparable> keyClass = HDataType.getWritableComparableTypes(pack.getKeyType()).getClass();
+                    Class<? extends WritableComparable> keyClass = HDataType
+                            .getWritableComparableTypes(
+                                    pack.getPkgr().getKeyType()).getClass();
                     nwJob.setOutputKeyClass(keyClass);
-                    selectComparator(mro, pack.getKeyType(), nwJob);
+                    selectComparator(mro, pack.getPkgr().getKeyType(), nwJob);
                 }
                 nwJob.setOutputValueClass(NullableTuple.class);
             }
 
             if(mro.isGlobalSort() || mro.isLimitAfterSort()){
-                // Only set the quantiles file and sort partitioner if we're a
-                // global sort, not for limit after sort.
                 if (mro.isGlobalSort()) {
                     String symlink = addSingleFileToDistributedCache(
                             pigContext, conf, mro.getQuantFile(), "pigsample");
@@ -966,8 +992,8 @@ public class JobControlCompiler{
             if (pigContext.getExecType() == ExecType.MAPREDUCE) {
                 String newfiles = conf.get("alternative.mapreduce.job.cache.files");
                 if (newfiles!=null) {
-                    String files = conf.get("mapreduce.job.cache.files");
-                    conf.set("mapreduce.job.cache.files",
+                    String files = conf.get(MRConfiguration.JOB_CACHE_FILES);
+                    conf.set(MRConfiguration.JOB_CACHE_FILES,
                             files == null ? newfiles.toString() : files + "," + newfiles);
                 }
             }
@@ -983,6 +1009,21 @@ public class JobControlCompiler{
             int errCode = 2017;
             String msg = "Internal error creating job configuration.";
             throw new JobCreationException(msg, errCode, PigException.BUG, e);
+        }
+    }
+
+    public static void configureCompression(Configuration conf) {
+        // Convert mapred.output.* to output.compression.*, See PIG-1791
+        if( "true".equals( conf.get(MRConfiguration.OUTPUT_COMPRESS) ) ) {
+            conf.set( "output.compression.enabled",  "true" );
+            String codec = conf.get(MRConfiguration.OUTPUT_COMPRESSION_CODEC);
+            if( codec == null ) {
+                throw new IllegalArgumentException("'" + MRConfiguration.OUTPUT_COMPRESS +
+                        "' is set but no value is specified for '" +
+                        MRConfiguration.OUTPUT_COMPRESSION_CODEC + "'." );
+            } else {
+                conf.set( "output.compression.codec", codec );
+            }
         }
     }
 
@@ -1016,15 +1057,6 @@ public class JobControlCompiler{
         log.info("Setting Parallelism to " + jobParallelism);
 
         Configuration conf = nwJob.getConfiguration();
-        
-        if(mro.customPartitioner!=null && mro.customPartitioner.equals("org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.partitioners.RollupH2IRGPartitioner")) {
-        	Integer pivot = Integer.parseInt(conf.get("rollup.h2irg.pivot"));
-        	if (pivot == 0) {
-        		jobParallelism = 1;
-        		log.info("Changing Parallelism to " + jobParallelism + " due to using IRG");
-        	}
-        	
-    	}
 
         // set various parallelism into the job conf for later analysis, PIG-2779
         conf.setInt("pig.info.reducers.default.parallel", pigContext.defaultParallel);
@@ -1035,7 +1067,27 @@ public class JobControlCompiler{
         mro.requestedParallelism = jobParallelism;
 
         // finally set the number of reducers
-        conf.setInt("mapred.reduce.tasks", jobParallelism);
+        conf.setInt(MRConfiguration.REDUCE_TASKS, jobParallelism);
+    }
+
+    /**
+     * If pivot position is zero, we use only one reducer
+     * @param plan the MR plan
+     * @param mro the MR operator
+     * @param nwJob the current job
+     * @throws IOException
+     */
+    public void updateNumReducers(MROperPlan plan, MapReduceOper mro,
+    org.apache.hadoop.mapreduce.Job nwJob) throws IOException {
+        // Change number of reducer to 1 if only IRG is used
+        if (mro.customPartitioner != null && mro.customPartitioner.equals(ROLLUP_PARTITIONER)) {
+            log.info("Changing Parallelism to 1 due to using IRG");
+        }
+        conf.setInt("pig.info.reducers.default.parallel", 1);
+        conf.setInt("pig.info.reducers.requested.parallel", 1);
+        conf.setInt("pig.info.reducers.estimated.parallel", 1);
+        conf.setInt(MRConfiguration.REDUCE_TASKS, 1);
+        nwJob.setNumReduceTasks(1);
     }
 
     /**
@@ -1064,7 +1116,7 @@ public class JobControlCompiler{
             } else {
                 // reducer estimation could return -1 if it couldn't estimate
                 log.info("Could not estimate number of reducers and no requested or default " +
-                		"parallelism set. Defaulting to 1 reducer.");
+                        "parallelism set. Defaulting to 1 reducer.");
                 jobParallelism = 1;
             }
         }
@@ -1532,6 +1584,7 @@ public class JobControlCompiler{
                             new Path(FileLocalizer.getTemporaryPath(pigContext).toString());
                     FileSystem fs = dst.getFileSystem(conf);
                     fs.copyFromLocalFile(src, dst);
+                    fs.setReplication(dst, (short)conf.getInt(MRConfiguration.SUMIT_REPLICATION, 3));
 
                     // Construct the dst#srcName uri for DistributedCache
                     URI dstURI = null;
@@ -1641,7 +1694,7 @@ public class JobControlCompiler{
         Path pathInHDFS = shipToHDFS(pigContext, conf, url);
         // and add to the DistributedCache
         DistributedCache.addFileToClassPath(pathInHDFS, conf);
-        pigContext.skipJars.add(url.getPath());
+        pigContext.addSkipJar(url.getPath());
     }
 
     private static Path getCacheStagingDir(Configuration conf) throws IOException {
@@ -1658,39 +1711,44 @@ public class JobControlCompiler{
     private static Path getFromCache(PigContext pigContext,
             Configuration conf,
             URL url) throws IOException {
+        InputStream is1 = null;
+        InputStream is2 = null;
+        OutputStream os = null;
+
         try {
             Path stagingDir = getCacheStagingDir(conf);
             String filename = FilenameUtils.getName(url.getPath());
 
-            String checksum = DigestUtils.shaHex(url.openStream());
+            is1 = url.openStream();
+            String checksum = DigestUtils.shaHex(is1);
             FileSystem fs = FileSystem.get(conf);
             Path cacheDir = new Path(stagingDir, checksum);
             Path cacheFile = new Path(cacheDir, filename);
             if (fs.exists(cacheFile)) {
-               log.info("Found " + url + " in jar cache at "+ stagingDir);
-               long curTime = System.currentTimeMillis();
-               fs.setTimes(cacheFile, -1, curTime);
-               return cacheFile;
+                log.debug("Found " + url + " in jar cache at "+ cacheDir);
+                long curTime = System.currentTimeMillis();
+                fs.setTimes(cacheFile, -1, curTime);
+                return cacheFile;
             }
-            log.info("Url "+ url + " was not found in jarcache at "+ stagingDir);
+            log.info("Url "+ url + " was not found in jarcache at "+ cacheDir);
             // attempt to copy to cache else return null
             fs.mkdirs(cacheDir, FileLocalizer.OWNER_ONLY_PERMS);
-            OutputStream os = null;
-            InputStream is = null;
-            try {
-                os = FileSystem.create(fs, cacheFile, FileLocalizer.OWNER_ONLY_PERMS);
-                is = url.openStream();
-                IOUtils.copyBytes(is, os, 4096, true);
-            } finally {
-                org.apache.commons.io.IOUtils.closeQuietly(is);
-                // IOUtils should not close stream to HDFS quietly
-                os.close();
-            }
+            is2 = url.openStream();
+            os = FileSystem.create(fs, cacheFile, FileLocalizer.OWNER_ONLY_PERMS);
+            IOUtils.copyBytes(is2, os, 4096, true);
+
             return cacheFile;
 
         } catch (IOException ioe) {
             log.info("Unable to retrieve jar from jar cache ", ioe);
             return null;
+        } finally {
+            org.apache.commons.io.IOUtils.closeQuietly(is1);
+            org.apache.commons.io.IOUtils.closeQuietly(is2);
+            // IOUtils should not close stream to HDFS quietly
+            if (os != null) {
+                os.close();
+            }
         }
     }
 
@@ -1728,7 +1786,9 @@ public class JobControlCompiler{
         } finally {
             org.apache.commons.io.IOUtils.closeQuietly(is);
             // IOUtils should not close stream to HDFS quietly
-            os.close();
+            if (os != null) {
+                os.close();
+            }
         }
         return dst;
     }
@@ -1913,6 +1973,27 @@ public class JobControlCompiler{
                     replaced = true;
                 }
             }
+        }
+    }
+
+    public static void setOutputFormat(org.apache.hadoop.mapreduce.Job job) {
+        // the OutputFormat we report to Hadoop is always PigOutputFormat which
+        // can be wrapped with LazyOutputFormat provided if it is supported by
+        // the Hadoop version and PigConfiguration.PIG_OUTPUT_LAZY is set
+        if ("true".equalsIgnoreCase(job.getConfiguration().get(PigConfiguration.PIG_OUTPUT_LAZY))) {
+            try {
+                Class<?> clazz = PigContext
+                        .resolveClassName("org.apache.hadoop.mapreduce.lib.output.LazyOutputFormat");
+                Method method = clazz.getMethod("setOutputFormatClass",
+                        org.apache.hadoop.mapreduce.Job.class, Class.class);
+                method.invoke(null, job, PigOutputFormat.class);
+            } catch (Exception e) {
+                job.setOutputFormatClass(PigOutputFormat.class);
+                log.warn(PigConfiguration.PIG_OUTPUT_LAZY
+                        + " is set but LazyOutputFormat couldn't be loaded. Default PigOutputFormat will be used");
+            }
+        } else {
+            job.setOutputFormatClass(PigOutputFormat.class);
         }
     }
 

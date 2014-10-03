@@ -34,7 +34,9 @@ import org.apache.pig.newplan.logical.optimizer.AllSameRalationalNodesVisitor;
 public class LOForEach extends LogicalRelationalOperator {
 
     private static final long serialVersionUID = 2L;
+
     private LogicalPlan innerPlan;
+      
     public LOForEach(OperatorPlan plan) {
         super("LOForEach", plan);		
     }
@@ -125,16 +127,13 @@ public class LOForEach extends LogicalRelationalOperator {
     private static class NestedRelationalOperatorFinder extends AllSameRalationalNodesVisitor {
         String aliasOfOperator;
         LogicalRelationalOperator opFound = null;
-        
         public NestedRelationalOperatorFinder(LogicalPlan plan, String alias) throws FrontendException {
             super(plan, new ReverseDependencyOrderWalker(plan));
             aliasOfOperator = alias;
         }
-        
         public LogicalRelationalOperator getMatchedOperator() {
             return opFound;
         }
-        
         @Override
         public void execute(LogicalRelationalOperator op) throws FrontendException {
             if (op.getAlias()!=null && op.getAlias().equals(aliasOfOperator))

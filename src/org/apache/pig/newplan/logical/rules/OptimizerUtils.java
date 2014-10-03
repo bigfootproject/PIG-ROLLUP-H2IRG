@@ -27,7 +27,7 @@ import org.apache.pig.newplan.logical.expression.LogicalExpressionPlan;
 import org.apache.pig.newplan.logical.expression.UserFuncExpression;
 import org.apache.pig.newplan.logical.relational.LOForEach;
 import org.apache.pig.newplan.logical.relational.LOGenerate;
-import org.apache.pig.newplan.logical.relational.LORollupH2IRGForEach;
+import org.apache.pig.newplan.logical.relational.LORollupHIIForEach;
 import org.apache.pig.newplan.logical.relational.LogicalPlan;
 
 public class OptimizerUtils {
@@ -42,15 +42,15 @@ public class OptimizerUtils {
     }
 
     /**
-     * Find generate op from the rolluph2irgforeach operator.
-     * @param foreach the LORollupH2IRGForEach instance
+     * Find generate op from the rolluphiiforeach operator.
+     * @param foreach the LORollupHIIForEach instance
      * @return LOGenerate instance
      */
-    public static LOGenerate findGenerate(LORollupH2IRGForEach hfe) {
+    public static LOGenerate findGenerate(LORollupHIIForEach hfe) {
         LogicalPlan inner = hfe.getInnerPlan();
         return (LOGenerate) inner.getSinks().get(0);
     }
-    
+
     /**
      * Check if a given LOGenerate operator has any flatten fields.
      * @param gen the given LOGenerate instance

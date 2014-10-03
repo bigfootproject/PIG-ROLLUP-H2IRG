@@ -22,7 +22,6 @@ import java.io.File;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.net.URL;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Properties;
@@ -32,7 +31,6 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.mapred.JobConf;
-import org.apache.pig.PigConstants;
 import org.apache.pig.PigException;
 import org.apache.pig.backend.BackendException;
 import org.apache.pig.backend.datastorage.DataStorage;
@@ -42,37 +40,25 @@ import org.apache.pig.backend.hadoop.datastorage.ConfigurationUtil;
 import org.apache.pig.backend.hadoop.datastorage.HDataStorage;
 import org.apache.pig.backend.hadoop.executionengine.fetch.FetchLauncher;
 import org.apache.pig.backend.hadoop.executionengine.fetch.FetchOptimizer;
+import org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.MRConfiguration;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.PhysicalOperator;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.plans.PhysicalPlan;
 import org.apache.pig.backend.hadoop.executionengine.util.MapRedUtil;
 import org.apache.pig.backend.hadoop.streaming.HadoopExecutableManager;
 import org.apache.pig.impl.PigContext;
-import org.apache.pig.impl.PigImplConstants;
 import org.apache.pig.impl.logicalLayer.FrontendException;
 import org.apache.pig.impl.plan.OperatorKey;
 import org.apache.pig.impl.plan.PlanException;
 import org.apache.pig.impl.plan.VisitorException;
 import org.apache.pig.impl.streaming.ExecutableManager;
-import org.apache.pig.impl.util.ObjectSerializer;
 import org.apache.pig.impl.util.Utils;
 import org.apache.pig.newplan.Operator;
-import org.apache.pig.newplan.logical.optimizer.LogicalPlanOptimizer;
-import org.apache.pig.newplan.logical.optimizer.SchemaResetter;
-import org.apache.pig.newplan.logical.optimizer.UidResetter;
 import org.apache.pig.newplan.logical.relational.LOForEach;
 import org.apache.pig.newplan.logical.relational.LogToPhyTranslationVisitor;
 import org.apache.pig.newplan.logical.relational.LogicalPlan;
 import org.apache.pig.newplan.logical.relational.LogicalRelationalOperator;
-import org.apache.pig.newplan.logical.rules.InputOutputFileValidator;
-import org.apache.pig.newplan.logical.rules.LogicalRelationalNodeValidator;
-import org.apache.pig.newplan.logical.visitor.SortInfoSetter;
-import org.apache.pig.newplan.logical.visitor.StoreAliasSetter;
-import org.apache.pig.pen.POOptimizeDisabler;
 import org.apache.pig.tools.pigstats.PigStats;
-import org.apache.pig.validator.BlackAndWhitelistValidator;
 
-import com.google.common.base.Splitter;
-import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 
 public abstract class HExecutionEngine implements ExecutionEngine {
@@ -86,10 +72,8 @@ public abstract class HExecutionEngine implements ExecutionEngine {
     public static final String MAPRED_DEFAULT_SITE = "mapred-default.xml";
     public static final String YARN_DEFAULT_SITE = "yarn-default.xml";
 
-    public static final String JOB_TRACKER_LOCATION = "mapred.job.tracker";
     public static final String FILE_SYSTEM_LOCATION = "fs.default.name";
     public static final String ALTERNATIVE_FILE_SYSTEM_LOCATION = "fs.defaultFS";
-    public static final String MAPREDUCE_FRAMEWORK_NAME = "mapreduce.framework.name";
     public static final String LOCAL = "local";
 
     protected PigContext pigContext;
@@ -100,7 +84,6 @@ public abstract class HExecutionEngine implements ExecutionEngine {
     // val: the operator key for the root of the phyisical plan
     protected Map<OperatorKey, OperatorKey> logicalToPhysicalKeys;
     protected Map<Operator, PhysicalOperator> newLogToPhyMap;
-    private LogicalPlan newPreoptimizedPlan;
 
     public HExecutionEngine(PigContext pigContext) {
         this.pigContext = pigContext;
@@ -115,28 +98,22 @@ public abstract class HExecutionEngine implements ExecutionEngine {
         return jc;
     }
 
+    @Override
     public DataStorage getDataStorage() {
         return this.ds;
     }
 
+    @Override
     public void init() throws ExecException {
         init(this.pigContext.getProperties());
     }
 
-    public JobConf getLocalConf(Properties properties) {
+    public JobConf getLocalConf() {
         JobConf jc = new JobConf(false);
 
-        // If we are running in local mode we dont read the hadoop conf file
-        if (properties.getProperty(MAPREDUCE_FRAMEWORK_NAME) == null) {
-            jc.set(MAPREDUCE_FRAMEWORK_NAME, LOCAL);
-        }
-        jc.set(JOB_TRACKER_LOCATION, LOCAL);
-        jc.set(FILE_SYSTEM_LOCATION, "file:///");
-        jc.set(ALTERNATIVE_FILE_SYSTEM_LOCATION, "file:///");
-
+        jc.addResource(CORE_DEFAULT_SITE);
         jc.addResource(MAPRED_DEFAULT_SITE);
         jc.addResource(YARN_DEFAULT_SITE);
-        jc.addResource(CORE_DEFAULT_SITE);
 
         return jc;
     }
@@ -198,7 +175,15 @@ public abstract class HExecutionEngine implements ExecutionEngine {
             // add hdfs-default.xml into configuration
             new DistributedFileSystem();
         } else {
-            jc = getLocalConf(properties);
+            // If we are running in local mode we dont read the hadoop conf file
+            if (properties.getProperty(MRConfiguration.FRAMEWORK_NAME) == null) {
+                properties.setProperty(MRConfiguration.FRAMEWORK_NAME, LOCAL);
+            }
+            properties.setProperty(MRConfiguration.JOB_TRACKER, LOCAL);
+            properties.setProperty(FILE_SYSTEM_LOCATION, "file:///");
+            properties.setProperty(ALTERNATIVE_FILE_SYSTEM_LOCATION, "file:///");
+
+            jc = getLocalConf();
         }
 
         // the method below alters the properties object by overriding the
@@ -206,7 +191,7 @@ public abstract class HExecutionEngine implements ExecutionEngine {
         // the properties
         Utils.recomputeProperties(jc, properties);
 
-        cluster = jc.get(JOB_TRACKER_LOCATION);
+        cluster = jc.get(MRConfiguration.JOB_TRACKER);
         nameNode = jc.get(FILE_SYSTEM_LOCATION);
         if (nameNode == null) {
             nameNode = (String) pigContext.getProperties().get(ALTERNATIVE_FILE_SYSTEM_LOCATION);
@@ -216,7 +201,7 @@ public abstract class HExecutionEngine implements ExecutionEngine {
             if (!cluster.contains(":") && !cluster.equalsIgnoreCase(LOCAL)) {
                 cluster = cluster + ":50020";
             }
-            properties.setProperty(JOB_TRACKER_LOCATION, cluster);
+            properties.setProperty(MRConfiguration.JOB_TRACKER, cluster);
         }
 
         if (nameNode != null && nameNode.length() > 0) {
@@ -227,99 +212,21 @@ public abstract class HExecutionEngine implements ExecutionEngine {
         }
 
         LOG.info("Connecting to hadoop file system at: "
-        		+ (nameNode == null ? LOCAL : nameNode));
+                + (nameNode == null ? LOCAL : nameNode));
         // constructor sets DEFAULT_REPLICATION_FACTOR_KEY
         ds = new HDataStorage(properties);
 
         if (cluster != null && !cluster.equalsIgnoreCase(LOCAL)) {
             LOG.info("Connecting to map-reduce job tracker at: "
-            		+ jc.get(JOB_TRACKER_LOCATION));
+                    + jc.get(MRConfiguration.JOB_TRACKER));
         }
     }
 
-    @SuppressWarnings("unchecked")
     public PhysicalPlan compile(LogicalPlan plan, Properties properties) throws FrontendException {
         if (plan == null) {
             int errCode = 2041;
             String msg = "No Plan to compile";
             throw new FrontendException(msg, errCode, PigException.BUG);
-        }
-
-        newPreoptimizedPlan = new LogicalPlan(plan);
-
-        if (pigContext.inIllustrator) {
-            // disable all PO-specific optimizations
-            POOptimizeDisabler pod = new POOptimizeDisabler(plan);
-            pod.visit();
-        }
-
-        UidResetter uidResetter = new UidResetter(plan);
-        uidResetter.visit();
-
-        SchemaResetter schemaResetter = new SchemaResetter(plan,
-        		true /* skip duplicate uid check*/);
-        schemaResetter.visit();
-
-        HashSet<String> disabledOptimizerRules;
-        try {
-            disabledOptimizerRules = (HashSet<String>) ObjectSerializer
-            		.deserialize(pigContext.getProperties().getProperty(
-            				PigImplConstants.PIG_OPTIMIZER_RULES_KEY));
-        } catch (IOException ioe) {
-            int errCode = 2110;
-            String msg = "Unable to deserialize optimizer rules.";
-            throw new FrontendException(msg, errCode, PigException.BUG, ioe);
-        }
-        if (disabledOptimizerRules == null) {
-            disabledOptimizerRules = new HashSet<String>();
-        }
-
-        String pigOptimizerRulesDisabled = this.pigContext.getProperties()
-        		.getProperty(PigConstants.PIG_OPTIMIZER_RULES_DISABLED_KEY);
-        if (pigOptimizerRulesDisabled != null) {
-            disabledOptimizerRules.addAll(Lists.newArrayList((Splitter.on(",")
-            		.split(pigOptimizerRulesDisabled))));
-        }
-
-        if (pigContext.inIllustrator) {
-            disabledOptimizerRules.add("MergeForEach");
-            disabledOptimizerRules.add("PartitionFilterOptimizer");
-            disabledOptimizerRules.add("LimitOptimizer");
-            disabledOptimizerRules.add("SplitFilter");
-            disabledOptimizerRules.add("PushUpFilter");
-            disabledOptimizerRules.add("MergeFilter");
-            disabledOptimizerRules.add("PushDownForEachFlatten");
-            disabledOptimizerRules.add("ColumnMapKeyPrune");
-            disabledOptimizerRules.add("AddForEach");
-            disabledOptimizerRules.add("GroupByConstParallelSetter");
-            disabledOptimizerRules.add("RollupH2IRGOptimizer");
-        }
-
-        StoreAliasSetter storeAliasSetter = new StoreAliasSetter(plan);
-        storeAliasSetter.visit();
-
-        // run optimizer
-        LogicalPlanOptimizer optimizer = new LogicalPlanOptimizer(plan, 100,
-        		disabledOptimizerRules);
-        optimizer.optimize();
-
-        // compute whether output data is sorted or not
-        SortInfoSetter sortInfoSetter = new SortInfoSetter(plan);
-        sortInfoSetter.visit();
-
-        if (!pigContext.inExplain) {
-            // Validate input/output file. Currently no validation framework in
-            // new logical plan, put this validator here first.
-            // We might decide to move it out to a validator framework in future
-            LogicalRelationalNodeValidator validator = new InputOutputFileValidator
-            		(plan, pigContext);
-            validator.validate();
-
-            // Check for blacklist and whitelist properties and disable
-            // commands/operators accordingly. Note if a user does not
-            // specify these, Pig will work without any filters or validations
-            validator = new BlackAndWhitelistValidator(pigContext, plan);
-            validator.validate();
         }
 
         // translate new logical plan to physical plan
@@ -356,10 +263,7 @@ public abstract class HExecutionEngine implements ExecutionEngine {
         return result;
     }
 
-    public LogicalPlan getNewPlan() {
-        return newPreoptimizedPlan;
-    }
-
+    @Override
     public PigStats launchPig(LogicalPlan lp, String grpName, PigContext pc)
             throws FrontendException, ExecException {
 
@@ -370,7 +274,7 @@ public abstract class HExecutionEngine implements ExecutionEngine {
             //skipped; a SimpleFetchPigStats will be returned through which the result
             //can be directly fetched from the underlying storage
             if (FetchOptimizer.isPlanFetchable(pc, pp)) {
-            	return new FetchLauncher(pc).launchPig(pp);
+                return new FetchLauncher(pc).launchPig(pp);
             }
             return launcher.launchPig(pp, grpName, pigContext);
         } catch (ExecException e) {
@@ -384,6 +288,7 @@ public abstract class HExecutionEngine implements ExecutionEngine {
         }
     }
 
+    @Override
     public void explain(LogicalPlan lp, PigContext pc, PrintStream ps,
             String format, boolean verbose, File file, String suffix)
                     throws PlanException, VisitorException, IOException,
@@ -417,25 +322,30 @@ public abstract class HExecutionEngine implements ExecutionEngine {
         }
     }
 
+    @Override
     public Properties getConfiguration() {
         Properties properties = new Properties();
         properties.putAll(pigContext.getProperties());
         return properties;
     }
 
+    @Override
     public void setConfiguration(Properties newConfiguration) throws ExecException {
         init(newConfiguration);
     }
 
+    @Override
     public void setProperty(String property, String value) {
         Properties properties = pigContext.getProperties();
         properties.put(property, value);
     }
 
+    @Override
     public ExecutableManager getExecutableManager() {
         return new HadoopExecutableManager();
     }
 
+    @Override
     public void killJob(String jobID) throws BackendException {
         if (launcher != null) {
             launcher.killJob(jobID, getJobConf());

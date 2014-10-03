@@ -49,7 +49,6 @@ import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOpe
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POFilter;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POForEach;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POGlobalRearrange;
-import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.PORollupH2IRGForEach;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POLimit;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POLoad;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POLocalRearrange;
@@ -57,14 +56,15 @@ import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOpe
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POMergeJoin;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.PONative;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POPackage;
-import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POPackage.PackageType;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.PORank;
+import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.PORollupHIIForEach;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POSkewedJoin;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POSort;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POSplit;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POStore;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POStream;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POUnion;
+import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.Packager.PackageType;
 import org.apache.pig.data.DataType;
 import org.apache.pig.data.SchemaTupleClassGenerator.GenContext;
 import org.apache.pig.data.SchemaTupleFrontend;
@@ -135,7 +135,7 @@ public class LogToPhyTranslationVisitor extends LogicalRelationalNodesVisitor {
         // The last parameter here is set to true as we assume all files are
         // splittable due to LoadStore Refactor
         POLoad load = new POLoad(new OperatorKey(scope, nodeGen
-        		.getNextNodeId(scope)), loLoad.getLoadFunc());
+                .getNextNodeId(scope)), loLoad.getLoadFunc());
         load.addOriginalLocation(loLoad.getAlias(), loLoad.getLocation());
         load.setLFile(loLoad.getFileSpec());
         load.setPc(pc);
@@ -219,7 +219,7 @@ public class LogToPhyTranslationVisitor extends LogicalRelationalNodesVisitor {
         pushWalker(childWalker);
         //currentWalker.walk(this);
         currentWalker.walk(
-                new ExpToPhyTranslationVisitor( currentWalker.getPlan(), 
+                new ExpToPhyTranslationVisitor( currentWalker.getPlan(),
                         childWalker, filter, currentPlan, logToPhyMap ) );
         popWalker();
 
@@ -261,7 +261,7 @@ public class LogToPhyTranslationVisitor extends LogicalRelationalNodesVisitor {
             currentPlan = new PhysicalPlan();
             PlanWalker childWalker = new ReverseDependencyOrderWalkerWOSeenChk(plan);
             pushWalker(childWalker);
-            childWalker.walk(new ExpToPhyTranslationVisitor( currentWalker.getPlan(), 
+            childWalker.walk(new ExpToPhyTranslationVisitor( currentWalker.getPlan(),
                     childWalker, sort, currentPlan, logToPhyMap));
             sortPlans.add(currentPlan);
             popWalker();
@@ -358,7 +358,7 @@ public class LogToPhyTranslationVisitor extends LogicalRelationalNodesVisitor {
                     expressionPlans.put(i,loRank.getRankColPlans());
 
                 POPackage poPackage = compileToLR_GR_PackTrio(loRank, null, flags, expressionPlans);
-                poPackage.setPackageType(PackageType.GROUP);
+                poPackage.getPkgr().setPackageType(PackageType.GROUP);
                 translateSoftLinks(loRank);
 
                 List<Boolean> flattenLst = Arrays.asList(true, false);
@@ -367,7 +367,7 @@ public class LogToPhyTranslationVisitor extends LogicalRelationalNodesVisitor {
                 POProject feproj1 = new POProject(new OperatorKey(scope, nodeGen.getNextNodeId(scope)), -1);
                 feproj1.addOriginalLocation(loRank.getAlias(), loRank.getLocation());
                 feproj1.setColumn(0);
-                feproj1.setResultType(poPackage.getKeyType());
+                feproj1.setResultType(poPackage.getPkgr().getKeyType());
                 feproj1.setStar(false);
                 feproj1.setOverloaded(false);
                 fep1.add(feproj1);
@@ -584,6 +584,7 @@ public class LogToPhyTranslationVisitor extends LogicalRelationalNodesVisitor {
             POPackage poPackage = new POPackage(new OperatorKey(scope, nodeGen
                     .getNextNodeId(scope)), cross.getRequestedParallelism());
             poGlobal.addOriginalLocation(cross.getAlias(), cross.getLocation());
+            poGlobal.setCross(true);
             currentPlan.add(poGlobal);
             currentPlan.add(poPackage);
 
@@ -610,7 +611,9 @@ public class LogToPhyTranslationVisitor extends LogicalRelationalNodesVisitor {
                     ce1.setValue(ce1val);
                     ce1.setResultType(DataType.TUPLE);*/
 
-                    POUserFunc gfc = new POUserFunc(new OperatorKey(scope, nodeGen.getNextNodeId(scope)),cross.getRequestedParallelism(), Arrays.asList((PhysicalOperator)ce1,(PhysicalOperator)ce2), new FuncSpec(GFCross.class.getName()));
+                    POUserFunc gfc = new POUserFunc(new OperatorKey(scope, nodeGen.getNextNodeId(scope)),cross.getRequestedParallelism(),
+                            Arrays.asList((PhysicalOperator)ce1,(PhysicalOperator)ce2), new FuncSpec(GFCross.class.getName()
+                            + "('" + poGlobal.getOperatorKey().toString() + "')"));
                     gfc.addOriginalLocation(cross.getAlias(), cross.getLocation());
                     gfc.setResultType(DataType.BAG);
                     fep1.addAsLeaf(gfc);
@@ -668,14 +671,14 @@ public class LogToPhyTranslationVisitor extends LogicalRelationalNodesVisitor {
                 throw new VisitorException(msg, errCode, PigException.BUG, e);
             }
 
-            poPackage.setKeyType(DataType.TUPLE);
+            poPackage.getPkgr().setKeyType(DataType.TUPLE);
             poPackage.setResultType(DataType.TUPLE);
             poPackage.setNumInps(count);
             boolean inner[] = new boolean[count];
             for (int i=0;i<count;i++) {
                 inner[i] = true;
             }
-            poPackage.setInner(inner);
+            poPackage.getPkgr().setInner(inner);
 
             List<PhysicalPlan> fePlans = new ArrayList<PhysicalPlan>();
             List<Boolean> flattenLst = new ArrayList<Boolean>();
@@ -783,8 +786,10 @@ public class LogToPhyTranslationVisitor extends LogicalRelationalNodesVisitor {
 
         org.apache.pig.newplan.logical.relational.LogicalPlan inner = foreach.getInnerPlan();
         LOGenerate gen = (LOGenerate)inner.getSinks().get(0);
+
         List<LogicalExpressionPlan> exps = gen.getOutputPlans();
         List<Operator> preds = inner.getPredecessors(gen);
+
         currentPlans.push(currentPlan);
 
         // we need to translate each predecessor of LOGenerate into a physical plan.
@@ -871,7 +876,7 @@ public class LogToPhyTranslationVisitor extends LogicalRelationalNodesVisitor {
         poFE.addOriginalLocation(foreach.getAlias(), foreach.getLocation());
         poFE.setResultType(DataType.BAG);
         logToPhyMap.put(foreach, poFE);
-        currentPlan.add(poFE); 
+        currentPlan.add(poFE);
 
         // generate cannot have multiple inputs
         List<Operator> op = foreach.getPlan().getPredecessors(foreach);
@@ -893,7 +898,7 @@ public class LogToPhyTranslationVisitor extends LogicalRelationalNodesVisitor {
     }
 
     @Override
-    public void visit(LORollupH2IRGForEach hforeach) throws FrontendException {
+    public void visit(LORollupHIIForEach hforeach) throws FrontendException {
         String scope = DEFAULT_SCOPE;
 
         List<PhysicalPlan> innerPlans = new ArrayList<PhysicalPlan>();
@@ -973,33 +978,23 @@ public class LogToPhyTranslationVisitor extends LogicalRelationalNodesVisitor {
         for (boolean fl : flatten) {
             flattenList.add(fl);
         }
-        
-        // Create new PORollupH2IRGForEach for translation from Logical Plan to Physical Plan
-        PORollupH2IRGForEach poHFE = new PORollupH2IRGForEach(new OperatorKey(scope, nodeGen.getNextNodeId(scope)),
+        // Create new PORollupHIIForEach for translation from Logical Plan to Physical Plan
+        PORollupHIIForEach poHFE = new PORollupHIIForEach(new OperatorKey(scope, nodeGen.getNextNodeId(scope)),
                 hforeach.getRequestedParallelism(), innerPlans, flattenList);
-        
-        if(hforeach.getPivot()!=0 || hforeach.getPivot() == null)
-        	poHFE.setPivot(hforeach.getPivot()-1);
-        
-        // check if user specified the pivot position or not
-        // if user did specify the pivot position
-        if(hforeach.getPivot()!=null)
-        	if(hforeach.getPivot() == 0) // if the pivot position is zero, set the pivot position for physical op is zero
-        		poHFE.setPivot(0);
-        	else
-        		poHFE.setPivot(hforeach.getPivot() - 1); //else, decrease pivot position by one, because the position user specified and the rollup field index is different by one
+
+        // if the pivot position is zero, set the pivot position for physical op is zero
+        if(hforeach.getPivot() == 0)
+            poHFE.setPivot(0);
+        //else, decrease pivot position by one, because the position user specified and the
+        //rollup field index is different by one
         else
-        	poHFE.setPivot(0); //if user did not specify the pivot position, set the pivot to 0 to use the IRG approach
-        
-        //check if we use IRG (user did not specify the pivot position) or H2IRG
-        if(hforeach.getOnlyIRG())
-        	poHFE.setOnlyIRG();
-        
-        //get the start and size of rollup position in case the rollup does not stand at the front
-        poHFE.setRollupPosition(hforeach.getRollupPosition());
-        poHFE.setRollupStartPosition(hforeach.getRollupStartPosition());
+            poHFE.setPivot(hforeach.getPivot() - 1);
+        //get the start field index and size of rollup position in case the rollup does not stand at the front
+        poHFE.setRollupFieldIndex(hforeach.getRollupFieldIndex());
+        poHFE.setRollupOldFieldIndex(hforeach.getRollupOldFieldIndex());
         poHFE.setRollupSize(hforeach.getRollupSize());
-        
+        poHFE.setDimensionSize(hforeach.getDimensionSize());
+
         poHFE.addOriginalLocation(hforeach.getAlias(), hforeach.getLocation());
         poHFE.setResultType(DataType.BAG);
         logToPhyMap.put(hforeach, poHFE);
@@ -1023,7 +1018,7 @@ public class LogToPhyTranslationVisitor extends LogicalRelationalNodesVisitor {
 
         translateSoftLinks(hforeach);
     }
-    
+
     /**
      * This function takes in a List of LogicalExpressionPlan and converts them to
      * a list of PhysicalPlans
@@ -1108,8 +1103,8 @@ public class LogToPhyTranslationVisitor extends LogicalRelationalNodesVisitor {
 //        } else {
 //            int errCode = 2051;
 //            String msg = "Did not find a predecessor for Store." ;
-//            throw new LogicalToPhysicalTranslatorException(msg, errCode, PigException.BUG);            
-        }        
+//            throw new LogicalToPhysicalTranslatorException(msg, errCode, PigException.BUG);
+        }
 
         try {
             currentPlan.connect(from, store);
@@ -1130,7 +1125,20 @@ public class LogToPhyTranslationVisitor extends LogicalRelationalNodesVisitor {
             break;
         case REGULAR:
             POPackage poPackage = compileToLR_GR_PackTrio(cg, cg.getCustomPartitioner(), cg.getInner(), cg.getExpressionPlans());
-            poPackage.setPackageType(PackageType.GROUP);            
+            poPackage.getPkgr().setPackageType(PackageType.GROUP);
+            if(cg.getPivot()!=-1) {
+                //Set the pivot value
+                poPackage.setPivot(cg.getPivot());
+                //Set the size of total fields that involve in CUBE clause
+                poPackage.setDimensionSize(cg.getDimensionSize());
+                //Set the index of the first field involves in ROLLUP
+                poPackage.setRollupFieldIndex(cg.getRollupFieldIndex());
+                //Set the original index of the first field involves in ROLLUP in case it was moved to the end
+                //(if we have the combination of cube and rollup)
+                poPackage.setRollupOldFieldIndex(cg.getRollupOldFieldIndex());
+                //Set number of algebraic functions that used after rollup
+                poPackage.setNumberAlgebraic(cg.getNumberAlgebraic());
+            }
             logToPhyMap.put(cg, poPackage);
             break;
         case MERGE:
@@ -1481,8 +1489,8 @@ public class LogToPhyTranslationVisitor extends LogicalRelationalNodesVisitor {
                     SchemaTupleFrontend.registerToGenerateIfPossible(mergedSchema, false, GenContext.MERGE_JOIN);
                 }
 
-                // inner join on two sorted inputs. We have less restrictive 
-                // implementation here in a form of POMergeJoin which doesn't 
+                // inner join on two sorted inputs. We have less restrictive
+                // implementation here in a form of POMergeJoin which doesn't
                 // require loaders to implement collectable interface.
                 try {
                     smj = new POMergeJoin(new OperatorKey(scope,nodeGen.getNextNodeId(scope)),
@@ -1545,7 +1553,7 @@ public class LogToPhyTranslationVisitor extends LogicalRelationalNodesVisitor {
                         e.getErrorCode(),e.getErrorSource(),e);
             }
             logToPhyMap.put(loj, fe);
-            poPackage.setPackageType(POPackage.PackageType.JOIN);
+            poPackage.getPkgr().setPackageType(PackageType.JOIN);
         }
         translateSoftLinks(loj);
     }
@@ -1616,10 +1624,10 @@ public class LogToPhyTranslationVisitor extends LogicalRelationalNodesVisitor {
             }
         }
 
-        poPackage.setKeyType(type);
+        poPackage.getPkgr().setKeyType(type);
         poPackage.setResultType(DataType.TUPLE);
         poPackage.setNumInps(count);
-        poPackage.setInner(innerFlags);
+        poPackage.getPkgr().setInner(innerFlags);
         return poPackage;
     }
 
@@ -1633,7 +1641,7 @@ public class LogToPhyTranslationVisitor extends LogicalRelationalNodesVisitor {
         try{
             for(int i=0;i< inputs.size();i++){
                 PhysicalPlan fep1 = new PhysicalPlan();
-                POProject feproj1 = new POProject(new OperatorKey(scope, nodeGen.getNextNodeId(scope)), 
+                POProject feproj1 = new POProject(new OperatorKey(scope, nodeGen.getNextNodeId(scope)),
                         parallel, i+1); //i+1 since the first column is the "group" field
                 feproj1.addOriginalLocation(alias, location);
                 feproj1.setResultType(DataType.BAG);
@@ -1787,8 +1795,8 @@ public class LogToPhyTranslationVisitor extends LogicalRelationalNodesVisitor {
         } else {
             int errCode = 2051;
             String msg = "Did not find a predecessor for Split." ;
-            throw new LogicalToPhysicalTranslatorException(msg, errCode, PigException.BUG);            
-        }        
+            throw new LogicalToPhysicalTranslatorException(msg, errCode, PigException.BUG);
+        }
 
         try {
             currentPlan.connect(from, physOp);
@@ -1819,7 +1827,7 @@ public class LogToPhyTranslationVisitor extends LogicalRelationalNodesVisitor {
         pushWalker(childWalker);
         //currentWalker.walk(this);
         currentWalker.walk(
-                new ExpToPhyTranslationVisitor( currentWalker.getPlan(), 
+                new ExpToPhyTranslationVisitor( currentWalker.getPlan(),
                         childWalker, loSplitOutput, currentPlan, logToPhyMap) );
         popWalker();
 
@@ -1853,7 +1861,7 @@ public class LogToPhyTranslationVisitor extends LogicalRelationalNodesVisitor {
      * with as many null's as dictated by the schema
      * @param fePlan the plan to update
      * @param joinInput the relation for which the corresponding bag is being checked
-     * @throws FrontendException 
+     * @throws FrontendException
      */
     public static void updateWithEmptyBagCheck(PhysicalPlan fePlan, Operator joinInput) throws FrontendException {
         LogicalSchema inputSchema = null;

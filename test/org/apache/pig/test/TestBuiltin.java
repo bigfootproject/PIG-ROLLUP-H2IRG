@@ -83,8 +83,11 @@ import org.apache.pig.builtin.PigStorage;
 import org.apache.pig.builtin.REGEX_EXTRACT;
 import org.apache.pig.builtin.REGEX_EXTRACT_ALL;
 import org.apache.pig.builtin.REPLACE;
+import org.apache.pig.builtin.ROUND;
+import org.apache.pig.builtin.ROUND_TO;
 import org.apache.pig.builtin.RTRIM;
 import org.apache.pig.builtin.SIZE;
+import org.apache.pig.builtin.SPRINTF;
 import org.apache.pig.builtin.STRSPLIT;
 import org.apache.pig.builtin.SUBSTRING;
 import org.apache.pig.builtin.SecondsBetween;
@@ -119,7 +122,6 @@ import org.apache.pig.data.DefaultBagFactory;
 import org.apache.pig.data.Tuple;
 import org.apache.pig.data.TupleFactory;
 import org.apache.pig.impl.PigContext;
-import org.apache.pig.impl.io.FileLocalizer;
 import org.apache.pig.impl.io.ReadToEndLoader;
 import org.apache.pig.impl.logicalLayer.FrontendException;
 import org.apache.pig.impl.logicalLayer.schema.Schema;
@@ -130,17 +132,16 @@ import org.joda.time.DateTimeZone;
 import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.BeforeClass;
 import org.junit.Test;
 
 public class TestBuiltin {
+    private static PigServer pigServer;
+    private static Properties properties;
+    private static MiniGenericCluster cluster;
 
-    PigServer pigServer;
-
-    // This should only be used when absolutely necessary -- eg, when using ReadToEndLoader.
-    private static MiniCluster cluster = MiniCluster.buildCluster();
-
-    TupleFactory tupleFactory = TupleFactory.getInstance();
-    BagFactory bagFactory = DefaultBagFactory.getInstance();
+    private TupleFactory tupleFactory = TupleFactory.getInstance();
+    private BagFactory bagFactory = DefaultBagFactory.getInstance();
 
     // some inputs
     private static Integer[] intInput = { 3, 1, 2, 4, 5, 7, null, 6, 8, 9, 10 };
@@ -201,10 +202,7 @@ public class TestBuiltin {
 
     @Before
     public void setUp() throws Exception {
-        // re initialize FileLocalizer so that each test will run correctly
-        // without any side effect of other tests - this is needed since some
-        // tests are in mapred and some in local mode.
-        FileLocalizer.setInitialized(false);
+        Util.resetStateForExecModeSwitch();
 
         pigServer = new PigServer(ExecType.LOCAL, new Properties());
         pigServer.setValidateEachStatement(true);
@@ -345,14 +343,17 @@ public class TestBuiltin {
         DateTimeZone.setDefault(DateTimeZone.forOffsetMillis(DateTimeZone.UTC.getOffset(null)));
     }
 
+    @BeforeClass
+    public static void oneTimeSetUp() throws Exception {
+        cluster = MiniGenericCluster.buildCluster();
+        properties = cluster.getProperties();
+    }
+
     @AfterClass
     public static void shutDown() {
         cluster.shutDown();
     }
 
-    /**
-     *
-     */
     private void setupEvalFuncMap() {
         for (String[] aggGroup : aggs) {
             for (String agg : aggGroup) {
@@ -1701,6 +1702,96 @@ public class TestBuiltin {
     }
 
     @Test
+    public void testROUND() throws Exception {
+        Double         dbl     = 0.987654321d;
+        Float          flt     = 0.987654321f;
+        EvalFunc<Long> rounder = new ROUND();
+        Tuple          tup     = TupleFactory.getInstance().newTuple(1);
+        long           expected, lng_out;
+
+        tup.set(0, dbl);
+        expected = Math.round(dbl);
+        lng_out   = rounder.exec(tup);
+        assertEquals(expected, lng_out);
+
+        tup.set(0, flt);
+        expected = Math.round(flt);
+        lng_out   = rounder.exec(tup);
+        assertEquals(expected, lng_out);
+
+        tup.set(0,  4.6d); assertEquals( 5l, lng_out = rounder.exec(tup));
+        tup.set(0,  2.4d); assertEquals( 2l, lng_out = rounder.exec(tup));
+        tup.set(0,  1.0d); assertEquals( 1l, lng_out = rounder.exec(tup));
+        tup.set(0, -1.0d); assertEquals(-1l, lng_out = rounder.exec(tup));
+        tup.set(0, -2.4d); assertEquals(-2l, lng_out = rounder.exec(tup));
+        tup.set(0, -4.6d); assertEquals(-5l, lng_out = rounder.exec(tup));
+
+        // Rounds towards positive infinity: round(x) = floor(x + 0.5)
+        tup.set(0,  3.5d); assertEquals( 4l, lng_out = rounder.exec(tup));
+        tup.set(0, -3.5d); assertEquals(-3l, lng_out = rounder.exec(tup));
+        tup.set(0,  2.5d); assertEquals( 3l, lng_out = rounder.exec(tup));
+        tup.set(0, -2.5d); assertEquals(-2l, lng_out = rounder.exec(tup));
+
+        // we don't need to test null input because of SKIP_UDF_CALL_FOR_NULL behavior
+    }
+
+    @Test
+    public void testROUND_TO() throws Exception {
+        Double           dbl_out;
+        EvalFunc<Double> rounder = new ROUND_TO();
+        Tuple            tup;
+        String           expected;
+
+        // Returns double given double
+        tup = TupleFactory.getInstance().newTuple(2);
+        tup.set(0,1234.1789d); tup.set(1, 8); expected = "1234.1789"; dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,1234.1789d); tup.set(1, 4); expected = "1234.1789"; dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,1234.1789d); tup.set(1, 2); expected = "1234.18";   dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,1234.1789d); tup.set(1, 1); expected = "1234.2";    dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,1234.1789d); tup.set(1, 0); expected = "1234.0";    dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,1234.1789d); tup.set(1,-1); expected = "1230.0";    dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,1234.1789d); tup.set(1,-3); expected = "1000.0";    dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,1234.1789d); tup.set(1,-4); expected = "0.0";       dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,1234.1789d); tup.set(1,-5); expected = "0.0";       dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+
+        // default rounding mode is round-half-to-even
+        tup.set(0,   3.25000001d); tup.set(1, 1); expected =  "3.3";  dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,   3.25d);   tup.set(1, 1); expected =  "3.2";      dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,  -3.25d);   tup.set(1, 1); expected = "-3.2";      dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,   3.15d);   tup.set(1, 1); expected =  "3.2";      dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,  -3.15d);   tup.set(1, 1); expected = "-3.2";      dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,   3.5d);    tup.set(1, 0); expected =  "4.0";      dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,  -3.5d);    tup.set(1, 0); expected = "-4.0";      dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,   2.5d);    tup.set(1, 0); expected =  "2.0";      dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,  -2.5d);    tup.set(1, 0); expected = "-2.0";      dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+
+        // Returns double given double; rounding mode is round-half-to-even (but explicitly now)
+        tup = TupleFactory.getInstance().newTuple(3);
+        tup.set(2, 6); // java.math.RoundingMode.HALF_EVEN
+        tup.set(0,   3.25d);   tup.set(1, 1); expected =  "3.2";      dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,  -3.25d);   tup.set(1, 1); expected = "-3.2";      dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,   3.15d);   tup.set(1, 1); expected =  "3.2";      dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,  -3.15d);   tup.set(1, 1); expected = "-3.2";      dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,   3.5d);    tup.set(1, 0); expected =  "4.0";      dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,  -3.5d);    tup.set(1, 0); expected = "-4.0";      dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,   2.5d);    tup.set(1, 0); expected =  "2.0";      dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,  -2.5d);    tup.set(1, 0); expected = "-2.0";      dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+
+        // Returns double given double; rounding mode is round-half-away-from-zero
+        tup = TupleFactory.getInstance().newTuple(3);
+        tup.set(2, 4); // java.math.RoundingMode.HALF_UP
+        tup.set(0,   3.25000001d); tup.set(1, 1); expected =  "3.3";  dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,   3.25d);   tup.set(1, 1); expected =  "3.3";      dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,  -3.25d);   tup.set(1, 1); expected = "-3.3";      dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,   3.15d);   tup.set(1, 1); expected =  "3.2";      dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,  -3.15d);   tup.set(1, 1); expected = "-3.2";      dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,   3.5d);    tup.set(1, 0); expected =  "4.0";      dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,  -3.5d);    tup.set(1, 0); expected = "-4.0";      dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,   2.5d);    tup.set(1, 0); expected =  "3.0";      dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+        tup.set(0,  -2.5d);    tup.set(1, 0); expected = "-3.0";      dbl_out = rounder.exec(tup); assertEquals(expected, dbl_out.toString());
+    }
+
+    @Test
     public void testStringFuncs() throws Exception {
         // Since String functions are trivial we add test on per case basis
         String inputStr = "Hello World!";
@@ -2022,13 +2113,6 @@ public class TestBuiltin {
         assertEquals(0.582222509739582, (Double)ans.get(2) ,0.0005);
     }
 
-    private void checkItemsGT(Iterable<Tuple> tuples, int field, int limit) throws ExecException {
-        for (Tuple t : tuples) {
-            Long val = (Long) t.get(field);
-            assertTrue("Value "+ val + " exceeded the expected limit", val > limit);
-        }
-    }
-
     @Test
     public void testToBag() throws Exception {
         //TEST TOBAG
@@ -2345,7 +2429,68 @@ public class TestBuiltin {
         its = pigServer.openIterator("B");
         t = its.next();
         assertEquals("abcd",t.get(0));
-        
+
+        // Concat on a null value returns null
+        pigServer.registerQuery("B = foreach A generate CONCAT('a', CONCAT('b',Null), 'd');");
+        its = pigServer.openIterator("B");
+        t = its.next();
+        assertNull(t.get(0));
+    }
+
+    @Test
+    public void testSPRINTF() throws Exception {
+        // String Sprintf
+        String  fmt = "%2$10s <%1$-6s< %2$,10d >%1$7s> %2$8x %3$10.3f";
+        String  s1  = "meep";
+        Integer ii  = 665568;
+        Float   ff  = 993.14159265f;
+        String  exp = "    665568 <meep  <    665,568 >   meep>    a27e0    993.142";
+        Tuple   ts;
+        String  res;
+        EvalFunc<String> sprinter = new SPRINTF();
+        //
+        // Formats output, happily navigating strings, numbers, etc
+        ts = TupleFactory.getInstance().newTuple(5);
+        ts.set(0, fmt);
+        ts.set(1, s1);
+        ts.set(2, ii);
+        ts.set(3, ff);
+        ts.set(4, (long)(ii * 1000000L));
+        res = sprinter.exec(ts);
+        assertEquals(exp, res);
+        //
+        // Happy with float/double, int/long
+        ts.set(2, 665568l);
+        ts.set(3, 993.14159265d);
+        res = sprinter.exec(ts);
+        assertEquals(exp, res);
+        //
+        // Returns null if any input is null
+        ts.set(3, null);
+        res = sprinter.exec(ts);
+        assertNull(res);
+        ts.set(3, ff);
+        ts.set(0, null);
+        res = sprinter.exec(ts);
+        assertNull(res);
+        //
+        // Works with just one arg
+        ts = TupleFactory.getInstance().newTuple(1);
+        ts.set(0, "meep!");
+        res = sprinter.exec(ts);
+        assertEquals("meep!", res);
+
+        // Test in script
+        //
+        String input = "vararg_sprintf_test_jira_3939.txt";
+        Util.createLocalInputFile(input, new String[]{"dummy"});
+        PigServer pigServer = new PigServer(ExecType.LOCAL);
+        pigServer.registerQuery("A = LOAD '"+input+"' as (x:chararray);");
+        //
+        pigServer.registerQuery("B = foreach A generate SPRINTF('%6s|%-8s|%2$,+12d %2$8x', 'yay', 665568);");
+        Iterator<Tuple> its = pigServer.openIterator("B");
+        Tuple t = its.next();
+        assertEquals("   yay|665568  |    +665,568    a27e0", t.get(0));
     }
 
     @Test
@@ -2507,7 +2652,7 @@ public class TestBuiltin {
 
         String input3 = "this:has:a:trailing:colon:\n";
         int arity3 = 6;
-        Util.createInputFile(cluster, "input.txt", new String[] {input2});
+        Util.createInputFile(cluster, "input.txt", new String[] {input3});
         LoadFunc p3 = new ReadToEndLoader(new PigStorage(":"), ConfigurationUtil.
             toConfiguration(cluster.getProperties()), "input.txt", 0);
         Tuple f3 = p3.getNext();
@@ -2545,10 +2690,10 @@ public class TestBuiltin {
         assertTrue(f3 == null);
     }
 
-    @SuppressWarnings("unchecked")
     @Test
     public void testSFPig() throws Exception {
-        PigServer mrPigServer = new PigServer(ExecType.MAPREDUCE);
+        Util.resetStateForExecModeSwitch();
+        PigServer mrPigServer = new PigServer(cluster.getExecType(), properties);
         String inputStr = "amy\tbob\tcharlene\tdavid\terin\tfrank";
         Util.createInputFile(cluster, "testSFPig-input.txt", new String[]
                                                                     {inputStr});
@@ -2578,7 +2723,6 @@ public class TestBuiltin {
      * unit tests are done in TestStringUDFs
      */
     @Test
-    @SuppressWarnings("unchecked")
     public void testStringUDFs() throws Exception {
         String inputStr = "amy smith ";
         File inputFile = Util.createInputFile("tmp", "testStrUDFsIn.txt", new String[] {inputStr});

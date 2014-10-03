@@ -402,7 +402,7 @@ public class POProject extends ExpressionOperator {
             Tuple inpValue = null;
             res = processInput();
             if(res.returnStatus!=POStatus.STATUS_OK)
-            	return res;
+                return res;
             if(isStar())
                 return res;
 

@@ -23,22 +23,31 @@ import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.PrintStream;
 import java.io.SequenceInputStream;
+import java.net.URL;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.filecache.DistributedCache;
+import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.PathFilter;
+import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.io.compress.BZip2Codec;
 import org.apache.hadoop.io.compress.GzipCodec;
 import org.apache.hadoop.mapred.JobConf;
@@ -52,9 +61,11 @@ import org.apache.pig.ResourceSchema;
 import org.apache.pig.ResourceSchema.ResourceFieldSchema;
 import org.apache.pig.backend.executionengine.ExecException;
 import org.apache.pig.backend.hadoop.datastorage.ConfigurationUtil;
+import org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.MRConfiguration;
 import org.apache.pig.data.DataType;
 import org.apache.pig.data.Tuple;
 import org.apache.pig.impl.PigContext;
+import org.apache.pig.impl.io.FileLocalizer;
 import org.apache.pig.impl.PigImplConstants;
 import org.apache.pig.impl.io.InterStorage;
 import org.apache.pig.impl.io.ReadToEndLoader;
@@ -67,12 +78,24 @@ import org.apache.pig.parser.ParserException;
 import org.apache.pig.parser.QueryParserDriver;
 
 import com.google.common.collect.Lists;
+import com.google.common.primitives.Longs;
 
 /**
  * Class with utility static methods
  */
 public class Utils {
     private static final Log log = LogFactory.getLog(Utils.class);
+    
+    /**
+     * This method checks whether JVM vendor is IBM
+     * @return true if IBM JVM is being used
+     * false otherwise
+     */
+    public static boolean isVendorIBM() {    	
+    	  return System.getProperty("java.vendor").contains("IBM");
+    }
+    
+    
     /**
      * This method is a helper for classes to implement {@link java.lang.Object#equals(java.lang.Object)}
      * checks if two objects are equals - two levels of checks are
@@ -303,7 +326,7 @@ public class Utils {
                 return false;
             }
         }
-        
+
         public String supportedCodecsToString() {
             StringBuffer sb = new StringBuffer();
             boolean first = true;
@@ -311,7 +334,7 @@ public class Utils {
                 if(first) {
                     first = false;
                 } else {
-                    sb.append(",");    
+                    sb.append(",");
                 }
                 sb.append(codec.name());
             }
@@ -368,11 +391,12 @@ public class Utils {
     public static void setMapredCompressionCodecProps(Configuration conf) {
         String codec = conf.get(
                 PigConfiguration.PIG_TEMP_FILE_COMPRESSION_CODEC, "");
-        if ("".equals(codec) && conf.get("mapred.output.compression.codec") != null) {
-            conf.setBoolean("mapred.output.compress", true);
-        } else if(TEMPFILE_STORAGE.SEQFILE.ensureCodecSupported(codec)) {
-            conf.setBoolean("mapred.output.compress", true);
-            conf.set("mapred.output.compression.codec", TEMPFILE_CODEC.valueOf(codec.toUpperCase()).getHadoopCodecClassName());
+        if ("".equals(codec) && conf.get(MRConfiguration.OUTPUT_COMPRESSION_CODEC) != null) {
+            conf.setBoolean(MRConfiguration.OUTPUT_COMPRESS, true);
+        } else if (TEMPFILE_STORAGE.SEQFILE.ensureCodecSupported(codec)) {
+            conf.setBoolean(MRConfiguration.OUTPUT_COMPRESS, true);
+            conf.set(MRConfiguration.OUTPUT_COMPRESSION_CODEC,
+                    TEMPFILE_CODEC.valueOf(codec.toUpperCase()).getHadoopCodecClassName());
         }
         // no codec specified
     }
@@ -390,17 +414,19 @@ public class Utils {
             break;
         case SEQFILE:
             conf.set(PigConfiguration.PIG_TEMP_FILE_COMPRESSION_STORAGE, "seqfile");
-            if("".equals(codec)) {
+            if ("".equals(codec)) {
                 // codec is not specified, ensure  is set
-                log.warn("Temporary file compression codec is not specified. Using mapred.output.compression.codec property.");
-                if(conf.get("mapred.output.compression.codec") == null) {
-                    throw new IOException("mapred.output.compression.codec is not set");
+                log.warn("Temporary file compression codec is not specified. Using " +
+                         MRConfiguration.OUTPUT_COMPRESSION_CODEC + " property.");
+                if(conf.get(MRConfiguration.OUTPUT_COMPRESSION_CODEC) == null) {
+                    throw new IOException(MRConfiguration.OUTPUT_COMPRESSION_CODEC + " is not set");
                 }
             } else if(storage.ensureCodecSupported(codec)) {
                 // do nothing
             } else {
                 throw new IOException("Invalid temporary file compression codec [" + codec + "]. " +
-                        "Expected compression codecs for " + storage.getStorageClass().getName() + " are " + storage.supportedCodecsToString() + ".");
+                        "Expected compression codecs for " + storage.getStorageClass().getName() +
+                        " are " + storage.supportedCodecsToString() + ".");
             }
             break;
         case TFILE:
@@ -408,7 +434,8 @@ public class Utils {
                 conf.set(PigConfiguration.PIG_TEMP_FILE_COMPRESSION_CODEC, codec.toLowerCase());
             } else {
                 throw new IOException("Invalid temporary file compression codec [" + codec + "]. " +
-                        "Expected compression codecs for " + storage.getStorageClass().getName() + " are " + storage.supportedCodecsToString() + ".");
+                        "Expected compression codecs for " + storage.getStorageClass().getName() +
+                        " are " + storage.supportedCodecsToString() + ".");
             }
             break;
         }
@@ -525,29 +552,100 @@ public class Utils {
         return baos.toString();
     }
 
-    /**
-     * Returns whether the give path has a FileSystem implementation.
-     *
-     * @param path path
-     * @param conf configuration
-     * @return true if the give path's scheme has a FileSystem implementation,
-     *         false otherwise
-     */
-    public static boolean hasFileSystemImpl(Path path, Configuration conf) {
-        String scheme = path.toUri().getScheme();
-        if (scheme != null) {
-            String fsImpl = conf.get("fs." + scheme + ".impl");
-            if (fsImpl == null) {
-                return false;
-            }
-        }
-        return true;
-    }
-    
-
-
     public static boolean isLocal(PigContext pigContext, Configuration conf) {
         return pigContext.getExecType().isLocal() || conf.getBoolean(PigImplConstants.CONVERTED_TO_LOCAL, false);
     }
 
+    // PIG-3929 use parameter substitution for pig properties similar to Hadoop Configuration
+    // Following code has been borrowed from Hadoop's Configuration#substituteVars
+    private static Pattern varPat = Pattern.compile("\\$\\{[^\\}\\$\u0020]+\\}");
+    private static int MAX_SUBST = 20;
+
+    public static String substituteVars(String expr) {
+        if (expr == null) {
+            return null;
+        }
+        Matcher match = varPat.matcher("");
+        String eval = expr;
+        for(int s=0; s<MAX_SUBST; s++) {
+            match.reset(eval);
+            if (!match.find()) {
+                return eval;
+            }
+            String var = match.group();
+            var = var.substring(2, var.length()-1); // remove ${ .. }
+            String val = null;
+            val = System.getProperty(var);
+            if (val == null) {
+                return eval; // return literal ${var}: var is unbound
+            }
+            // substitute
+            eval = eval.substring(0, match.start())+val+eval.substring(match.end());
+        }
+        throw new IllegalStateException("Variable substitution depth too large: " 
+                + MAX_SUBST + " " + expr);
+    }
+
+    /**
+     * A PathFilter that filters out invisible files.
+     */
+    public static final PathFilter VISIBLE_FILES = new PathFilter() {
+      @Override
+      public boolean accept(final Path p) {
+        return (!(p.getName().startsWith("_") || p.getName().startsWith(".")));
+      }
+    };
+
+    /**
+     * Finds a valid path for a file from a FileStatus object.
+     * @param fileStatus FileStatus object corresponding to a file,
+     * or a directory.
+     * @param fileSystem FileSystem in with the file should be found
+     * @return The first file found
+     * @throws IOException
+     */
+
+    public static Path depthFirstSearchForFile(final FileStatus fileStatus,
+        final FileSystem fileSystem) throws IOException {
+      if (fileSystem.isFile(fileStatus.getPath())) {
+        return fileStatus.getPath();
+      } else {
+        return depthFirstSearchForFile(
+            fileSystem.listStatus(fileStatus.getPath(), VISIBLE_FILES),
+            fileSystem);
+      }
+
+    }
+
+    /**
+     * Finds a valid path for a file from an array of FileStatus objects.
+     * @param statusArray Array of FileStatus objects in which to search
+     * for the file.
+     * @param fileSystem FileSystem in which to search for the first file.
+     * @return The first file found.
+     * @throws IOException
+     */
+    public static Path depthFirstSearchForFile(final FileStatus[] statusArray,
+        final FileSystem fileSystem) throws IOException {
+
+      // Most recent files first
+      Arrays.sort(statusArray,
+          new Comparator<FileStatus>() {
+            @Override
+            public int compare(final FileStatus fs1, final FileStatus fs2) {
+                return Longs.compare(fs2.getModificationTime(),fs1.getModificationTime());
+              }
+            }
+      );
+
+      for (FileStatus f : statusArray) {
+        Path p = depthFirstSearchForFile(f, fileSystem);
+        if (p != null) {
+          return p;
+        }
+      }
+
+      return null;
+
+    }
 }

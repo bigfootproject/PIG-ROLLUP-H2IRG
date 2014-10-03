@@ -25,7 +25,6 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.Writable;
-import org.apache.hadoop.mapreduce.JobContext;
 import org.apache.hadoop.mapreduce.Reducer;
 import org.apache.log4j.PropertyConfigurator;
 import org.apache.pig.PigException;
@@ -35,7 +34,7 @@ import org.apache.pig.backend.hadoop.executionengine.physicalLayer.POStatus;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.PhysicalOperator;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.Result;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.plans.PhysicalPlan;
-import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POJoinPackage;
+import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.JoinPackager;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POPackage;
 import org.apache.pig.data.Tuple;
 import org.apache.pig.impl.PigContext;
@@ -45,8 +44,6 @@ import org.apache.pig.impl.util.ObjectSerializer;
 import org.apache.pig.tools.pigstats.PigStatusReporter;
 
 public class PigCombiner {
-
-    public static JobContext sJobContext = null;
 
     public static class Combine
             extends Reducer<PigNullableWritable, NullableTuple, PigNullableWritable, Writable> {
@@ -84,7 +81,6 @@ public class PigCombiner {
         @Override
         protected void setup(Context context) throws IOException, InterruptedException {
             super.setup(context);
-            sJobContext = context;
             Configuration jConf = context.getConfiguration();
             try {
                 PigContext.setPackageImportList((ArrayList<String>)ObjectSerializer.deserialize(jConf.get("udf.import.list")));
@@ -139,12 +135,11 @@ public class PigCombiner {
                 PhysicalOperator.setReporter(pigReporter);
 
                 boolean aggregateWarning = "true".equalsIgnoreCase(pigContext.getProperties().getProperty("aggregate.warning"));
-
+                PigStatusReporter pigStatusReporter = PigStatusReporter.getInstance();
+                pigStatusReporter.setContext(new MRTaskContext(context));
                 PigHadoopLogger pigHadoopLogger = PigHadoopLogger.getInstance();
+                pigHadoopLogger.setReporter(pigStatusReporter);
                 pigHadoopLogger.setAggregate(aggregateWarning);
-                PigStatusReporter.setContext(context);
-                pigHadoopLogger.setReporter(PigStatusReporter.getInstance());
-
                 PhysicalOperator.setPigLogger(pigHadoopLogger);
             }
 
@@ -153,7 +148,7 @@ public class PigCombiner {
             // tuples out of the getnext() call of POJoinPackage
             // In this case, we process till we see EOP from
             // POJoinPacakage.getNext()
-            if (pack instanceof POJoinPackage)
+            if (pack.getPkgr() instanceof JoinPackager)
             {
                 pack.attachInput(key, tupIter.iterator());
                 while (true)

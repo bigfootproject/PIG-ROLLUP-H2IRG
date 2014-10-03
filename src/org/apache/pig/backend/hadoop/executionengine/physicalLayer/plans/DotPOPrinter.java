@@ -21,9 +21,7 @@ import java.io.PrintStream;
 import java.util.List;
 import java.util.LinkedList;
 import java.util.Collection;
-
 import org.apache.pig.impl.util.MultiMap;
-
 import java.util.HashSet;
 import java.util.Set;
 
@@ -116,9 +114,6 @@ public class DotPOPrinter extends DotPlanDumper<PhysicalOperator, PhysicalPlan,
         else if(op instanceof POForEach){
             plans.addAll(((POForEach)op).getInputPlans());
         }
-    	else if (op instanceof PORollupH2IRGForEach) {
-    		plans.addAll(((PORollupH2IRGForEach) op).getInputPlans());
-    	}
         else if(op instanceof POSort){
             plans.addAll(((POSort)op).getSortPlans());
         }

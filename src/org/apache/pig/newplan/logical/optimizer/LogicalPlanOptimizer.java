@@ -28,22 +28,25 @@ import com.google.common.collect.TreeMultimap;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.pig.impl.PigContext;
 import org.apache.pig.newplan.OperatorPlan;
 import org.apache.pig.newplan.logical.rules.AddForEach;
 import org.apache.pig.newplan.logical.rules.ColumnMapKeyPrune;
 import org.apache.pig.newplan.logical.rules.FilterAboveForeach;
+import org.apache.pig.newplan.logical.rules.FilterConstantCalculator;
+import org.apache.pig.newplan.logical.rules.ForEachConstantCalculator;
 import org.apache.pig.newplan.logical.rules.GroupByConstParallelSetter;
 import org.apache.pig.newplan.logical.rules.LimitOptimizer;
 import org.apache.pig.newplan.logical.rules.LoadTypeCastInserter;
-import org.apache.pig.newplan.logical.rules.LogicalExpressionSimplifier;
 import org.apache.pig.newplan.logical.rules.MergeFilter;
 import org.apache.pig.newplan.logical.rules.MergeForEach;
 import org.apache.pig.newplan.logical.rules.PartitionFilterOptimizer;
+import org.apache.pig.newplan.logical.rules.PredicatePushdownOptimizer;
 import org.apache.pig.newplan.logical.rules.PushDownForEachFlatten;
 import org.apache.pig.newplan.logical.rules.PushUpFilter;
+import org.apache.pig.newplan.logical.rules.RollupHIIOptimizer;
 import org.apache.pig.newplan.logical.rules.SplitFilter;
 import org.apache.pig.newplan.logical.rules.StreamTypeCastInserter;
-import org.apache.pig.newplan.logical.rules.RollupH2IRGOptimizer;
 import org.apache.pig.newplan.optimizer.PlanOptimizer;
 import org.apache.pig.newplan.optimizer.Rule;
 
@@ -53,20 +56,28 @@ public class LogicalPlanOptimizer extends PlanOptimizer {
     private Set<String> mRulesOff = null;
     private boolean allRulesDisabled = false;
     private SetMultimap<RulesReportKey, String> rulesReport = TreeMultimap.create();
+    private PigContext pc = null;
 
+    public LogicalPlanOptimizer(OperatorPlan p, int iterations, Set<String> turnOffRules) {
+        this(p, iterations, turnOffRules, null);
+    }
     /**
      * Create a new LogicalPlanOptimizer.
      * @param p               Plan to optimize.
      * @param iterations      Maximum number of optimizer iterations.
      * @param turnOffRules    Optimization rules to disable. "all" disables all non-mandatory
      *                        rules. null enables all rules.
+     * @param pc              PigContext object
      */
-    public LogicalPlanOptimizer(OperatorPlan p, int iterations, Set<String> turnOffRules) {
+    public LogicalPlanOptimizer(OperatorPlan p, int iterations, Set<String> turnOffRules, PigContext
+            pc) {
         super(p, null, iterations);
+        this.pc = pc;
         mRulesOff = turnOffRules == null ? new HashSet<String>() : turnOffRules;
         if (mRulesOff.contains("all")) {
             allRulesDisabled = true;
         }
+
         ruleSets = buildRuleSets();
         LOG.info(rulesReport);
         addListeners();
@@ -75,11 +86,13 @@ public class LogicalPlanOptimizer extends PlanOptimizer {
     protected List<Set<Rule>> buildRuleSets() {
         List<Set<Rule>> ls = new ArrayList<Set<Rule>>();
 
-        
         // Logical expression simplifier
         Set <Rule> s = new HashSet<Rule>();
-        // add logical expression simplification rule
-        Rule r = new LogicalExpressionSimplifier("FilterLogicExpressionSimplifier");
+        // add constant calculator rule
+        Rule r = new FilterConstantCalculator("ConstantCalculator", pc);
+        checkAndAddRule(s, r);
+        ls.add(s);
+        r = new ForEachConstantCalculator("ConstantCalculator", pc);
         checkAndAddRule(s, r);
         ls.add(s);
 
@@ -133,6 +146,15 @@ public class LogicalPlanOptimizer extends PlanOptimizer {
         if (!s.isEmpty())
             ls.add(s);
 
+        // Predicate pushdown set
+        // This set of rules push filter conditions to LoadFunc
+        s = new HashSet<Rule>();
+        // Optimize partition filter
+        r = new PredicatePushdownOptimizer("PredicatePushdownOptimizer");
+        checkAndAddRule(s, r);
+        if (!s.isEmpty())
+            ls.add(s);
+
         // PushDownForEachFlatten set
         s = new HashSet<Rule>();
         // Add the PushDownForEachFlatten
@@ -181,15 +203,16 @@ public class LogicalPlanOptimizer extends PlanOptimizer {
         checkAndAddRule(s, r);
         if (!s.isEmpty())
             ls.add(s);
-        
-        // This set of rules for rollup
+
+        // RollupHIIOptimizer Set
+        // This set of rules for rollup hii
         s = new HashSet<Rule>();
-        // Optimize limit
-        r = new RollupH2IRGOptimizer("RollupH2IRGOptimizer");
+        // Optimize RollupHII
+        r = new RollupHIIOptimizer("RollupHIIOptimizer");
         checkAndAddRule(s, r);
         if (!s.isEmpty())
             ls.add(s);
-        
+
         return ls;
     }
 
@@ -201,7 +224,7 @@ public class LogicalPlanOptimizer extends PlanOptimizer {
     private void checkAndAddRule(Set<Rule> ruleSet, Rule rule) {
         Preconditions.checkArgument(ruleSet != null);
         Preconditions.checkArgument(rule != null && rule.getName() != null);
-        
+
         if (rule.isMandatory()) {
             ruleSet.add(rule);
             rulesReport.put(RulesReportKey.RULES_ENABLED, rule.getName());

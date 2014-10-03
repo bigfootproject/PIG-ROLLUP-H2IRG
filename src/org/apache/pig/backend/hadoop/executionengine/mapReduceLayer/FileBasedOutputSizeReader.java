@@ -35,15 +35,27 @@ public class FileBasedOutputSizeReader implements PigStatsOutputSizeReader {
 
     private static final Log log = LogFactory.getLog(FileBasedOutputSizeReader.class);
 
-    /** 
+    /**
      * Returns whether the given POStore is supported by this output size reader
      * or not. We check whether the uri scheme of output file is one of hdfs,
      * local, and s3.
      * @param sto POStore
      */
     @Override
-    public boolean supports(POStore sto) {
-        return UriUtil.isHDFSFileOrLocalOrS3N(getLocationUri(sto));
+    public boolean supports(POStore sto, Configuration conf) {
+        String storeFuncName = sto.getStoreFunc().getClass().getCanonicalName();
+        // Some store functions do not support file-based output reader (e.g.
+        // HCatStorer), so they should be excluded.
+        String unsupported = conf.get(
+                PigStatsOutputSizeReader.OUTPUT_SIZE_READER_UNSUPPORTED);
+        if (unsupported != null) {
+            for (String s : unsupported.split(",")) {
+                if (s.equalsIgnoreCase(storeFuncName)) {
+                    return false;
+                }
+            }
+        }
+        return UriUtil.isHDFSFileOrLocalOrS3N(getLocationUri(sto), conf);
     }
 
     /**
@@ -53,9 +65,9 @@ public class FileBasedOutputSizeReader implements PigStatsOutputSizeReader {
      */
     @Override
     public long getOutputSize(POStore sto, Configuration conf) throws IOException {
-        if (!supports(sto)) {
-            log.warn("'" + sto.getStoreFunc().getClass().getName()
-                    + "' is not supported by " + getClass().getName());
+        if (!supports(sto, conf)) {
+            log.warn("'" + sto.getStoreFunc().getClass().getCanonicalName()
+                    + "' is not supported by " + getClass().getCanonicalName());
             return -1;
         }
 

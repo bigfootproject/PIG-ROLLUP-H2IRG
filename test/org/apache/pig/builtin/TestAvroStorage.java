@@ -40,6 +40,7 @@ import org.apache.pig.backend.executionengine.ExecJob;
 import org.apache.pig.backend.executionengine.ExecJob.JOB_STATUS;
 import org.apache.pig.builtin.mock.Storage.Data;
 import org.apache.pig.data.Tuple;
+import org.apache.pig.impl.util.Utils;
 import org.apache.pig.impl.util.avro.AvroBagWrapper;
 import org.apache.pig.impl.util.avro.AvroMapWrapper;
 import org.apache.pig.impl.util.avro.AvroTupleWrapper;
@@ -105,6 +106,7 @@ public class TestAvroStorage {
         "recordWithRepeatedSubRecords",
         "recursiveRecord",
         "projectionTest",
+        "projectionTestWithSchema",
         "recordsWithSimpleUnion",
         "recordsWithSimpleUnionOutput",
     };
@@ -310,7 +312,15 @@ public class TestAvroStorage {
         if(Util.WINDOWS){
             outbasedir = outbasedir.replace('\\','/');
         }
-        return outbasedir + st[2].getMethodName();
+
+        int index;
+        if (Utils.isVendorIBM()) {
+            index = 3;
+        } else {
+            index = 2;
+        }
+
+        return outbasedir + st[index].getMethodName();
     }
 
     @Test public void testLoadRecords() throws Exception {
@@ -335,10 +345,9 @@ public class TestAvroStorage {
                  "AVROSTORAGE_OUT_1", "records",
                  "AVROSTORAGE_OUT_2", "-n org.apache.pig.test.builtin -f " + basedir + "schema/recordsSubSchema.avsc",
                  "OUTFILE",           createOutputName())
-          );
-        verifyResults(createOutputName(),check);
-      }
-
+        );
+      verifyResults(createOutputName(),check);
+    }
 
     @Test public void testProjection() throws Exception {
         final String input = basedir + "data/avro/uncompressed/records.avro";
@@ -349,10 +358,23 @@ public class TestAvroStorage {
                 "AVROSTORAGE_OUT_1", "projectionTest",
                 "AVROSTORAGE_OUT_2", "-n org.apache.pig.test.builtin",
                 "OUTFILE",          createOutputName())
-          );
-        verifyResults(createOutputName(),check);
-      }
+        );
+      verifyResults(createOutputName(),check);
+    }
 
+    @Test public void testProjectionWithSchema() throws Exception {
+        final String input = basedir + "data/avro/uncompressed/records.avro";
+        final String check = basedir + "data/avro/uncompressed/projectionTestWithSchema.avro";
+        testAvroStorage(true, basedir + "code/pig/projection_test_with_schema.pig",
+                ImmutableMap.of(
+                        "INFILE",           input,
+                        "AVROSTORAGE_IN_2",  "-f " + basedir + "schema/records.avsc",
+                        "AVROSTORAGE_OUT_1", "projectionTest",
+                        "AVROSTORAGE_OUT_2", "-n org.apache.pig.test.builtin",
+                        "OUTFILE",          createOutputName())
+        );
+      verifyResults(createOutputName(),check);
+    }
 
     @Test public void testDates() throws Exception {
       final String input = basedir + "data/avro/uncompressed/records.avro";
@@ -768,7 +790,6 @@ public class TestAvroStorage {
         pigServerLocal.registerQuery("C = FOREACH B generate maps#'key1';");
         pigServerLocal.registerQuery("STORE C INTO 'out' USING mock.Storage();");
 
-
         List<Tuple> out = data.get("out");
         assertEquals(tuple("v11"), out.get(0));
         assertEquals(tuple("v21"), out.get(1));
@@ -891,7 +912,7 @@ public class TestAvroStorage {
             assertEquals(expected.size(), count);
           }
         }
-      }
+    }
 
     private Set<GenericData.Record> getExpected (String pathstr ) throws IOException {
 
@@ -929,7 +950,7 @@ public class TestAvroStorage {
             }
         }
         return ret;
-  }
+    }
 
 }
 

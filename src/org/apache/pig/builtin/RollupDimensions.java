@@ -47,9 +47,11 @@ public class RollupDimensions extends EvalFunc<DataBag> {
     private static BagFactory bf = BagFactory.getInstance();
     private static TupleFactory tf = TupleFactory.getInstance();
     private final String allMarker;
-    private Integer pivot = null;
-    private Boolean rollupH2IRGoptimizable = null;
-    
+    // the pivot position
+    private int pivot = -1;
+    // to check if rollup is optimized or not
+    private boolean rollupHIIoptimizable = false;
+
     public RollupDimensions() {
 	this(null);
     }
@@ -58,19 +60,19 @@ public class RollupDimensions extends EvalFunc<DataBag> {
 	super();
 	this.allMarker = allMarker;
     }
-    
-    public void setRollupH2IRGOptimizable(Boolean check) {
-    	this.rollupH2IRGoptimizable = check;
+
+    public void setRollupHIIOptimizable(boolean check) {
+        this.rollupHIIoptimizable = check;
     }
-    
-    public Boolean getRollupH2IRGOptimizable() {
-    	return this.rollupH2IRGoptimizable;
+
+    public boolean getRollupHIIOptimizable() {
+        return this.rollupHIIoptimizable;
     }
 
     public void setPivot(int pvt) throws IOException {
-    	this.pivot = pvt;
+        this.pivot = pvt;
     }
-    
+
     @Override
     public DataBag exec(Tuple tuple) throws IOException {
 	List<Tuple> result = Lists.newArrayListWithCapacity(tuple.size() + 1);
@@ -80,33 +82,34 @@ public class RollupDimensions extends EvalFunc<DataBag> {
 	return bf.newDefaultBag(result);
     }
 
-    private void iterativelyRollup(List<Tuple> result, Tuple input) throws IOException {
-    	
-    	Tuple tempTup = tf.newTuple(input.getAll());
-    	
-    	if(this.rollupH2IRGoptimizable !=null) { // rule is enabled
-    		if(this.rollupH2IRGoptimizable == true) {
-	    		if(this.pivot == null) //user did not specify the pivot position --> IRG approach
-	    			return;
-	    		else { //user did specify the pivot position --> IRG + IRG
-	    			if (this.pivot == 0) // we use the IRG approach
-	    				return;
-	    			else { // we use IRG+IRG approach
-	    				for (int i = this.pivot - 1; i < input.size(); i++)
-	    	    			tempTup.set(i, allMarker);
-	    	    		result.add(tf.newTuple(tempTup.getAll()));
-	    			}
-	    		}
-    		}
-    	}
-    	else { //we can not optimize --> Vanilla approach
-    		for (int i = input.size() - 1; i >= 0; i--) {
-    		    tempTup.set(i, allMarker);
-    		    result.add(tf.newTuple(tempTup.getAll()));
-    		}
-    	}
+    private void iterativelyRollup(List<Tuple> result, Tuple input)
+            throws IOException {
+
+        Tuple tempTup = tf.newTuple(input.getAll());
+
+        //if (this.rollupHIIoptimizable != null) { // rule is enabled
+            if (this.rollupHIIoptimizable == true) {
+                if (this.pivot == -1) // user did not specify the pivot position
+                                      // --> IRG approach
+                    return;
+                else { // user did specify the pivot position --> IRG + IRG
+                    if (this.pivot == 0) // we use the IRG approach
+                        return;
+                    else { // we use IRG+IRG approach
+                        for (int i = this.pivot - 1; i < input.size(); i++)
+                            tempTup.set(i, allMarker);
+                        result.add(tf.newTuple(tempTup.getAll()));
+                    }
+                }
+            }
+            else { // we can not optimize --> Vanilla approach
+            for (int i = input.size() - 1; i >= 0; i--) {
+                tempTup.set(i, allMarker);
+                result.add(tf.newTuple(tempTup.getAll()));
+            }
+        }
     }
- 
+
     @Override
     public Schema outputSchema(Schema input) {
 	// "dimensions" string is the default namespace assigned to the output
@@ -120,5 +123,10 @@ public class RollupDimensions extends EvalFunc<DataBag> {
 	    // we are specifying BAG explicitly, so this should not happen.
 	    throw new RuntimeException(e);
 	}
+    }
+
+    @Override
+    public boolean allowCompileTimeCalculation() {
+        return true;
     }
 }

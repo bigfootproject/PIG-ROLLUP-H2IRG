@@ -51,7 +51,8 @@ public class PigConfiguration {
      * Controls whether execution time of Pig UDFs should be tracked.
      * This feature uses counters; use judiciously.
      */
-    public static final String TIME_UDFS_PROP = "pig.udf.profile";
+    public static final String TIME_UDFS = "pig.udf.profile";
+    public static final String TIME_UDFS_FREQUENCY = "pig.udf.profile.frequency";
 
     /**
      * This key must be set to true by the user for code generation to be used.
@@ -70,7 +71,38 @@ public class PigConfiguration {
 
     public static final String SCHEMA_TUPLE_SHOULD_ALLOW_FORCE = "pig.schematuple.force";
 
-    /*
+    /**
+     * This key is used to enable multiquery optimization.
+     */
+    public static final String OPT_MULTIQUERY = "opt.multiquery";
+
+    /**
+     * This key is used to enable accumulator optimization.
+     */
+    public static final String OPT_ACCUMULATOR = "opt.accumulator";
+
+
+    /**
+     * This key is used to configure auto parallelism in tez. Default is true.
+     */
+    public static final String TEZ_AUTO_PARALLELISM = "pig.tez.auto.parallelism";
+
+    /**
+     * This key is used to enable union optimization.
+     */
+    public static final String TEZ_OPT_UNION = "pig.tez.opt.union";
+
+    /**
+     * This key is used to define whether to reuse AM in Tez jobs.
+     */
+    public static final String TEZ_SESSION_REUSE = "pig.tez.session.reuse";
+
+    /**
+     * This key is used to configure the interval of dag status report in seconds.
+     */
+    public static final String TEZ_DAG_STATUS_REPORT_INTERVAL = "pig.tez.dag.status.report.interval";
+
+    /**
      * Turns off use of combiners in MapReduce jobs produced by Pig.
      */
     public static final String PROP_NO_COMBINER = "pig.exec.nocombiner";
@@ -81,6 +113,12 @@ public class PigConfiguration {
      * will be set in the environment.
      */
     public static final String PIG_STREAMING_ENVIRONMENT = "pig.streaming.environment";
+
+    /**
+     * This key can be used to configure the python command for python streaming
+     * udf. For eg, python2.7.
+     */
+    public static final String PIG_STREAMING_UDF_PYTHON_COMMAND = "pig.streaming.udf.python.command";
 
     /**
      * This key is used to define the default load func. Pig will fallback on PigStorage
@@ -134,11 +172,44 @@ public class PigConfiguration {
     public static final String PIG_DELETE_TEMP_FILE = "pig.delete.temp.files";
 
     /**
+     * For a given mean and a confidence, a sample rate is obtained from a poisson udf
+     */
+    public static final String SAMPLE_RATE = "pig.sksampler.samplerate";
+
+    /**
+     * % of memory available for the input data. This is currently equal to the
+     * memory available for the skewed join
+     */
+    public static final String PERC_MEM_AVAIL = "pig.skewedjoin.reduce.memusage";
+
+    /**
      * This key used to control the maximum size loaded into
      * the distributed cache when doing fragment-replicated join
      */
     public static final String PIG_JOIN_REPLICATED_MAX_BYTES = "pig.join.replicated.max.bytes";
- 
+
+    /**
+     * Turns combine split files on or off
+     */
+    public static final String PIG_SPLIT_COMBINATION = "pig.splitCombination";
+
+    /**
+     * Whether turns combine split files off. This is for internal use only
+     */
+    public static final String PIG_NO_SPLIT_COMBINATION = "pig.noSplitCombination";
+
+    /**
+     * Specifies the size, in bytes, of data to be processed by a single map.
+     * Smaller files are combined untill this size is reached.
+     */
+    public static final String PIG_MAX_COMBINED_SPLIT_SIZE = "pig.maxCombinedSplitSize";
+
+    /**
+     * This key controls whether secondary sort key is used for optimization in case
+     * of nested distinct or sort
+     */
+    public static final String PIG_EXEC_NO_SECONDARY_KEY = "pig.exec.nosecondarykey";
+
     /**
      * This key used to control the sample size of RandomeSampleLoader for
      * order-by. The default value is 100 rows per task.
@@ -200,4 +271,54 @@ public class PigConfiguration {
      * which case, the entry would be "pig.whitelist=load,store,filter,group"
      */
     public static final String PIG_WHITELIST = "pig.whitelist";
+
+    /**
+     * This key is used to turns off use of task reports in job statistics.
+     */
+    public static final String PIG_NO_TASK_REPORT = "pig.stats.notaskreport";
+    
+    public static final String PIG_CROSS_PARALLELISM_HINT = "pig.cross.parallelism.hint";
+
+    public static final String REDUCER_ESTIMATOR_KEY = "pig.exec.reducer.estimator";
+    public static final String REDUCER_ESTIMATOR_ARG_KEY =  "pig.exec.reducer.estimator.arg";
+    /**
+     * This parameter is used to check if the rollup is optimizable or not after going
+     * through the RollupHIIOptimizer
+     */
+    public static final String PIG_HII_ROLLUP_OPTIMIZABLE = "pig.hii.rollup.optimizable";
+
+    /**
+     * This parameter stores the value of the pivot position. If the rollup is not optimizable
+     * this value will be -1; If the rollup is optimizable: if the user did specify the pivot
+     * in the rollup clause, this parameter will get that value; if the user did not specify
+     * the pivot in the rollup clause, this parameter will get the value of the median position
+     * of the fields in the rollup clause
+     */
+    public static final String PIG_HII_ROLLUP_PIVOT = "pig.hii.rollup.pivot";
+
+    /**
+     * This parameter stores the index of the first field involves in the rollup (or the first field
+     * involves in the rollup after changing the position of rollup to the end in case of having cube)
+     */
+    public static final String PIG_HII_ROLLUP_FIELD_INDEX = "pig.hii.rollup.field.index";
+
+    /**
+     * This parameter stores the index of the first field involves in the rollup before
+     * changing the position of rollup to the end in case of having cube
+     */
+    public static final String PIG_HII_ROLLUP_OLD_FIELD_INDEX = "pig.hii.rollup.old.field.index";
+
+    /**
+     * This parameter stores the size of total fields which involve in the CUBE clause. For example, we
+     * have two CUBE clause:
+     * B = CUBE A BY CUBE(year, month, day), ROLLUP(hour, minute, second);
+     * B = CUBE A BY ROLLUP(year, month, day, hour, minute, second);
+     * So this parameter will be 6 at both cases.
+     */
+    public static final String PIG_HII_NUMBER_TOTAL_FIELD = "pig.hii.number.total.field";
+
+    /**
+     * This parameter stores the number of algebraic functions that used after rollup.
+     */
+    public static final String PIG_HII_NUMBER_ALGEBRAIC = "pig.hii.number.algebraic";
 }

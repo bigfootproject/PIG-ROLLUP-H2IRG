@@ -36,7 +36,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.filecache.DistributedCache;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.pig.ExecType;
+import org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.MRConfiguration;
 import org.apache.pig.data.SchemaTupleClassGenerator.GenContext;
 import org.apache.pig.data.utils.StructuresHelper.Pair;
 import org.apache.pig.data.utils.StructuresHelper.SchemaKey;
@@ -80,7 +80,7 @@ public class SchemaTupleFrontend {
         contexts.add(type);
         schemasToGenerate.put(key, Pair.make(Integer.valueOf(id), contexts));
         LOG.debug("Registering "+(isAppendable ? "Appendable" : "")+"Schema for generation ["
-        		+ udfSchema + "] with id [" + id + "] and context: " + type);
+                + udfSchema + "] with id [" + id + "] and context: " + type);
         return id;
     }
 
@@ -97,7 +97,7 @@ public class SchemaTupleFrontend {
             codeDir = Files.createTempDir();
             codeDir.deleteOnExit();
             LOG.debug("Temporary directory for generated code created: "
-            		+ codeDir.getAbsolutePath());
+                    + codeDir.getAbsolutePath());
             this.pigContext = pigContext;
             this.conf = conf;
         }
@@ -114,8 +114,8 @@ public class SchemaTupleFrontend {
             if (pigContext.getExecType().isLocal()) {
                 String codePath = codeDir.getAbsolutePath();
                 LOG.info("Distributed cache not supported or needed in local mode. Setting key ["
-                		+ LOCAL_CODE_DIR + "] with code temp directory: " + codePath);
-                	conf.set(LOCAL_CODE_DIR, codePath);
+                        + LOCAL_CODE_DIR + "] with code temp directory: " + codePath);
+                    conf.set(LOCAL_CODE_DIR, codePath);
                 return;
             } else {
                 // This let's us avoid NPE in some of the non-traditional pipelines
@@ -149,6 +149,7 @@ public class SchemaTupleFrontend {
                 }
                 try {
                     fs.copyFromLocalFile(src, dst);
+                    fs.setReplication(dst, (short)conf.getInt(MRConfiguration.SUMIT_REPLICATION, 3));
                 } catch (IOException e) {
                     throw new RuntimeException("Unable to copy from local filesystem to HDFS, src = "
                             + src + ", dst = " + dst, e);

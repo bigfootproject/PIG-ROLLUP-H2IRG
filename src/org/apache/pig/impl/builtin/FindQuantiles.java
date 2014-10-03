@@ -53,6 +53,9 @@ public class FindQuantiles extends EvalFunc<Map<String, Object>>{
     enum State { ALL_ASC, ALL_DESC, MIXED };
     State mState;
     
+    protected Integer numQuantiles = null;
+    protected DataBag samples = null;
+    
     private class SortComparator implements Comparator<Tuple> {
         @Override
         @SuppressWarnings("unchecked")
@@ -155,19 +158,21 @@ public class FindQuantiles extends EvalFunc<Map<String, Object>>{
         Map<String, Object> output = new HashMap<String, Object>();
         if(in==null || in.size()==0)
             return null;
-        Integer numQuantiles = null;
-        DataBag samples = null;
+        
         ArrayList<Tuple> quantilesList = new ArrayList<Tuple>();
         InternalMap weightedParts = new InternalMap();
         // the sample file has a tuple as under:
         // (numQuantiles, bag of samples) 
         // numQuantiles here is the reduce parallelism
         try{
-            numQuantiles = (Integer)in.get(0);
-            samples = (DataBag)in.get(1);
-            
+            if (numQuantiles == null) {
+                numQuantiles = (Integer)in.get(0);
+            }
+            if (samples == null) {
+                samples = (DataBag)in.get(1);
+            }
             long numSamples = samples.size();
-            long toSkip = numSamples / numQuantiles;
+            double toSkip = (double)numSamples / numQuantiles;
             if(toSkip == 0) {
                 // numSamples is < numQuantiles;
                 // set numQuantiles to numSamples
@@ -175,9 +180,10 @@ public class FindQuantiles extends EvalFunc<Map<String, Object>>{
                 toSkip = 1;
             }
             
-            long ind=0, j=-1, nextQuantile = toSkip-1;
+            long ind=0, j=-1;
+            double nextQuantile = toSkip-1;
             for (Tuple it : samples) {
-                if (ind==nextQuantile){
+                if (ind==(long)nextQuantile){
                     ++j;
                     quantilesList.add(it);
                     nextQuantile+=toSkip;

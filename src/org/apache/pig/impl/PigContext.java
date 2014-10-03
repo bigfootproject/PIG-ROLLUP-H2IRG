@@ -62,6 +62,7 @@ import org.apache.pig.backend.executionengine.ExecException;
 import org.apache.pig.backend.executionengine.ExecutionEngine;
 import org.apache.pig.backend.hadoop.datastorage.ConfigurationUtil;
 import org.apache.pig.backend.hadoop.datastorage.HDataStorage;
+import org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.MRConfiguration;
 import org.apache.pig.impl.streaming.ExecutableManager;
 import org.apache.pig.impl.streaming.StreamingCommand;
 import org.apache.pig.impl.util.JarManager;
@@ -112,7 +113,7 @@ public class PigContext implements Serializable {
     transient private Map<URL, String> extraJarOriginalPaths = new HashMap<URL, String>();
 
     // jars needed for scripting udfs - jython.jar etc
-    public List<String> scriptJars = new ArrayList<String>(2);
+    transient public List<String> scriptJars = new ArrayList<String>(2);
 
     // jars that should not be merged in.
     // (some functions may come from pig.jar and we don't want the whole jar file.)
@@ -120,7 +121,7 @@ public class PigContext implements Serializable {
 
     // jars that are predeployed to the cluster and thus should not be merged in at all (even subsets).
     transient public Vector<String> predeployedJars = new Vector<String>(2);
-    
+
     // script files that are needed to run a job
     @Deprecated
     public List<String> scriptFiles = new ArrayList<String>();
@@ -148,7 +149,7 @@ public class PigContext implements Serializable {
     private static ThreadLocal<ArrayList<String>> packageImportList =
         new ThreadLocal<ArrayList<String>>();
 
-    private static ThreadLocal<Map<String,Class<?>>> classCache = 
+    private static ThreadLocal<Map<String,Class<?>>> classCache =
         new ThreadLocal<Map<String,Class<?>>>();
 
     private Properties log4jProperties = new Properties();
@@ -161,6 +162,9 @@ public class PigContext implements Serializable {
     // might skip some check in the logical plan validation (file
     // existence checks, etc).
     public boolean inExplain = false;
+
+    // Where we are processing a dump schema right now
+    public boolean inDumpSchema = false;
 
     // whether we're processing an ILLUSTRATE right now.
     public boolean inIllustrator = false;
@@ -240,13 +244,13 @@ public class PigContext implements Serializable {
     }
 
     public PigContext(Configuration conf) throws PigException {
-    	this(ConfigurationUtil.toProperties(conf));
+        this(ConfigurationUtil.toProperties(conf));
     }
-        
+
     public PigContext(Properties properties) throws PigException {
-    	this(ExecTypeProvider.selectExecType(properties), properties);
+        this(ExecTypeProvider.selectExecType(properties), properties);
     }
-    
+
     public PigContext(ExecType execType, Configuration conf) {
         this(execType, ConfigurationUtil.toProperties(conf));
     }
@@ -259,9 +263,9 @@ public class PigContext implements Serializable {
         String pigJar = JarManager.findContainingJar(Main.class);
         String hadoopJar = JarManager.findContainingJar(FileSystem.class);
         if (pigJar != null) {
-            skipJars.add(pigJar);
+            addSkipJar(pigJar);
             if (!pigJar.equals(hadoopJar))
-                skipJars.add(hadoopJar);
+                addSkipJar(hadoopJar);
         }
 
         this.executionEngine = execType.getExecutionEngine(this);
@@ -273,7 +277,7 @@ public class PigContext implements Serializable {
         skippedShipPaths.add("/sbin");
         skippedShipPaths.add("/usr/sbin");
         skippedShipPaths.add("/usr/local/sbin");
-        
+
         macros = new HashMap<String, Tree>();
         scriptingUDFs = new HashMap<String, String>();
 
@@ -311,7 +315,7 @@ public class PigContext implements Serializable {
     }
 
     public void setJobtrackerLocation(String newLocation) {
-        executionEngine.setProperty("mapred.job.tracker", newLocation);
+        executionEngine.setProperty(MRConfiguration.JOB_TRACKER, newLocation);
     }
 
     /**
@@ -320,18 +324,7 @@ public class PigContext implements Serializable {
      * @param path
      */
     public void addScriptFile(String path) {
-        if (path != null) {
-            aliasedScriptFiles.put(path.replaceFirst("^/", "").replaceAll(":", ""), new File(path));
-        }
-    }
-
-    public boolean hasJar(String path) {
-        for (URL url : extraJars) {
-            if (extraJarOriginalPaths.get(url).equals(path)) {
-                return true;
-            }
-        }
-        return false;
+        addScriptFile(path, path);
     }
 
     /**
@@ -346,6 +339,18 @@ public class PigContext implements Serializable {
         }
     }
 
+    public void addScriptJar(String path) {
+        if (path != null && !scriptJars.contains(path)) {
+            scriptJars.add(path);
+        }
+    }
+
+    public void addSkipJar(String path) {
+        if (path != null && !skipJars.contains(path)) {
+            skipJars.add(path);
+        }
+    }
+
     public void addJar(String path) throws MalformedURLException {
         if (path != null) {
             URL resource = (new File(path)).toURI().toURL();
@@ -354,23 +359,34 @@ public class PigContext implements Serializable {
     }
 
     public void addJar(URL resource, String originalPath) throws MalformedURLException{
-        if (resource != null) {
+        if (resource != null && !extraJars.contains(resource)) {
             extraJars.add(resource);
             extraJarOriginalPaths.put(resource, originalPath);
             classloader.addURL(resource);
             Thread.currentThread().setContextClassLoader(PigContext.classloader);
         }
     }
-    
+
+    public boolean hasJar(String path) {
+        for (URL url : extraJars) {
+            if (extraJarOriginalPaths.get(url).equals(path)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /**
-     * Adds the specified path to the predeployed jars list. These jars will 
+     * Adds the specified path to the predeployed jars list. These jars will
      * never be included in generated job jar.
      * <p>
-     * This can be called for jars that are pre-installed on the Hadoop 
+     * This can be called for jars that are pre-installed on the Hadoop
      * cluster to reduce the size of the job jar.
      */
     public void markJarAsPredeployed(String path) {
-        predeployedJars.add(path);
+        if (path != null && !predeployedJars.contains(path)) {
+            predeployedJars.add(path);
+        }
     }
 
     public String doParamSubstitution(InputStream in,
@@ -629,24 +645,24 @@ public class PigContext implements Serializable {
             c = new HashMap<String,Class<?>>();
             classCache.set(c);
         }
-             
+
         return c;
     }
-    
+
     @SuppressWarnings("rawtypes")
     public static Class resolveClassName(String name) throws IOException{
-        Map<String,Class<?>> cache = getClassCache(); 
-        
+        Map<String,Class<?>> cache = getClassCache();
+
         Class c = cache.get(name);
         if (c != null) {
             return c;
         }
-        
+
         for(String prefix: getPackageImportList()) {
             try {
                 c = Class.forName(prefix+name,true, PigContext.classloader);
                 cache.put(name, c);
-                
+
                 return c;
             }
             catch (ClassNotFoundException e) {
@@ -853,11 +869,7 @@ public class PigContext implements Serializable {
      * @return error source
      */
     public byte getErrorSource() {
-        if(execType == ExecType.LOCAL || execType == ExecType.MAPREDUCE) {
-            return PigException.REMOTE_ENVIRONMENT;
-        } else {
-            return PigException.BUG;
-        }
+        return PigException.REMOTE_ENVIRONMENT;
     }
 
     public static ArrayList<String> getPackageImportList() {

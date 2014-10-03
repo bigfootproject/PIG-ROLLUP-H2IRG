@@ -41,6 +41,7 @@ import org.apache.hadoop.mapred.JobID;
 import org.apache.hadoop.mapred.RunningJob;
 import org.apache.hadoop.mapred.TaskReport;
 import org.apache.hadoop.mapred.jobcontrol.Job;
+import org.apache.hadoop.mapreduce.TaskType;
 import org.apache.pig.PigConfiguration;
 import org.apache.pig.PigException;
 import org.apache.pig.PigRunner.ReturnCode;
@@ -48,7 +49,7 @@ import org.apache.pig.PigWarning;
 import org.apache.pig.backend.BackendException;
 import org.apache.pig.backend.executionengine.ExecException;
 import org.apache.pig.backend.hadoop.datastorage.ConfigurationUtil;
-import org.apache.pig.backend.hadoop.executionengine.HExecutionEngine;
+import org.apache.pig.backend.hadoop.executionengine.JobCreationException;
 import org.apache.pig.backend.hadoop.executionengine.Launcher;
 import org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.MRCompiler.LastInputStreamingOptimizer;
 import org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.plans.DotMRPrinter;
@@ -59,7 +60,7 @@ import org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.plans.MRPrin
 import org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.plans.POPackageAnnotator;
 import org.apache.pig.backend.hadoop.executionengine.mapReduceLayer.plans.XMLMRPrinter;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.plans.PhysicalPlan;
-import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POJoinPackage;
+import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.JoinPackager;
 import org.apache.pig.backend.hadoop.executionengine.physicalLayer.relationalOperators.POStore;
 import org.apache.pig.backend.hadoop.executionengine.shims.HadoopShims;
 import org.apache.pig.impl.PigContext;
@@ -88,21 +89,17 @@ public class MapReduceLauncher extends Launcher{
 
     public static final String SUCCEEDED_FILE_NAME = "_SUCCESS";
 
-    public static final String SUCCESSFUL_JOB_OUTPUT_DIR_MARKER =
-            "mapreduce.fileoutputcommitter.marksuccessfuljobs";
-
     private static final Log log = LogFactory.getLog(MapReduceLauncher.class);
 
     private boolean aggregateWarning = false;
 
+    @Override
     public void kill() {
         try {
             log.debug("Receive kill signal");
             if (jc!=null) {
                 for (Job job : jc.getRunningJobs()) {
-                    RunningJob runningJob = job.getJobClient().getJob(job.getAssignedJobID());
-                    if (runningJob!=null)
-                        runningJob.killJob();
+                    HadoopShims.killJob(job);
                     log.info("Job " + job.getAssignedJobID() + " killed");
                 }
             }
@@ -111,6 +108,7 @@ public class MapReduceLauncher extends Launcher{
         }
     }
 
+    @Override
     public void killJob(String jobID, Configuration conf) throws BackendException {
         try {
             if (conf != null) {
@@ -149,7 +147,7 @@ public class MapReduceLauncher extends Launcher{
             JobCreationException,
             Exception {
         long sleepTime = 500;
-        aggregateWarning = "true".equalsIgnoreCase(pc.getProperties().getProperty("aggregate.warning"));
+        aggregateWarning = Boolean.valueOf(pc.getProperties().getProperty("aggregate.warning"));
         MROperPlan mrp = compile(php, pc);
 
         ConfigurationValidator.validatePigProperties(pc.getProperties());
@@ -157,7 +155,7 @@ public class MapReduceLauncher extends Launcher{
 
         MRExecutionEngine exe = (MRExecutionEngine) pc.getExecutionEngine();
         Properties defaultProperties = new Properties();
-        JobConf defaultJobConf = exe.getLocalConf(defaultProperties);
+        JobConf defaultJobConf = exe.getLocalConf();
         Utils.recomputeProperties(defaultJobConf, defaultProperties);
 
         // This is a generic JobClient for checking progress of the jobs
@@ -190,7 +188,7 @@ public class MapReduceLauncher extends Launcher{
         JobControlThreadExceptionHandler jctExceptionHandler = new JobControlThreadExceptionHandler();
 
         boolean stop_on_failure =
-                pc.getProperties().getProperty("stop.on.failure", "false").equals("true");
+            Boolean.valueOf(pc.getProperties().getProperty("stop.on.failure", "false"));
 
         // jc is null only when mrp.size == 0
         while(mrp.size() != 0) {
@@ -217,10 +215,10 @@ public class MapReduceLauncher extends Launcher{
 
                             String stackTrace = Utils.getStackStraceStr(e);
                             LogUtils.writeLog(msg,
-                            		stackTrace,
-                            		pc.getProperties().getProperty("pig.logfile"),
-                            		log
-                            		);
+                                    stackTrace,
+                                    pc.getProperties().getProperty("pig.logfile"),
+                                    log
+                                    );
                             log.info(msg);
 
                             if (stop_on_failure) {
@@ -252,8 +250,8 @@ public class MapReduceLauncher extends Launcher{
             String jobTrackerLoc;
             JobConf jobConf = jobsWithoutIds.get(0).getJobConf();
             try {
-                String port = jobConf.get("mapred.job.tracker.http.address");
-                String jobTrackerAdd = jobConf.get(HExecutionEngine.JOB_TRACKER_LOCATION);
+                String port = jobConf.get(MRConfiguration.JOB_TRACKER_HTTP_ADDRESS);
+                String jobTrackerAdd = jobConf.get(MRConfiguration.JOB_TRACKER);
 
                 jobTrackerLoc = jobTrackerAdd.substring(0,jobTrackerAdd.indexOf(":"))
                         + port.substring(port.indexOf(":"));
@@ -322,10 +320,9 @@ public class MapReduceLauncher extends Launcher{
                                 log.info("detailed locations: " + aliasLocation);
                             }
 
-
-                            if(jobTrackerLoc != null){
-                                log.info("More information at: http://"+ jobTrackerLoc+
-                                		"/jobdetails.jsp?jobid="+job.getAssignedJobID());
+                            if (!HadoopShims.isHadoopYARN() && jobTrackerLoc != null) {
+                                log.info("More information at: http://" + jobTrackerLoc
+                                        + "/jobdetails.jsp?jobid=" + job.getAssignedJobID());
                             }
 
                             // update statistics for this job so jobId is set
@@ -339,7 +336,7 @@ public class MapReduceLauncher extends Launcher{
                     }
                     jobsWithoutIds.removeAll(jobsAssignedIdInThisRun);
 
-                    double prog = (numMRJobsCompl+calculateProgress(jc, statsJobClient))/totalMRJobs;
+                    double prog = (numMRJobsCompl+calculateProgress(jc))/totalMRJobs;
                     if (notifyProgress(prog, lastProg)) {
                         List<Job> runnJobs = jc.getRunningJobs();
                         if (runnJobs != null) {
@@ -368,7 +365,7 @@ public class MapReduceLauncher extends Launcher{
                         // we don't warn again for this group of jobs
                         warn_failure = false;
                         log.warn("Ooops! Some job has failed! Specify -stop_on_failure if you "
-                        		+ "want Pig to stop immediately on failure.");
+                                + "want Pig to stop immediately on failure.");
                     }
                 }
 
@@ -379,9 +376,9 @@ public class MapReduceLauncher extends Launcher{
                     if (jobControlException instanceof PigException) {
                         if (jobControlExceptionStackTrace != null) {
                             LogUtils.writeLog("Error message from job controller",
-                            		jobControlExceptionStackTrace, pc
-                            		.getProperties().getProperty(
-                            				"pig.logfile"), log);
+                                    jobControlExceptionStackTrace, pc
+                                    .getProperties().getProperty(
+                                            "pig.logfile"), log);
                         }
                         throw jobControlException;
                     } else {
@@ -435,11 +432,11 @@ public class MapReduceLauncher extends Launcher{
             failed = true;
         }
 
-        if (!"false".equalsIgnoreCase(pc.getProperties().getProperty(PigConfiguration.PIG_DELETE_TEMP_FILE))) {
+        if (Boolean.valueOf(pc.getProperties().getProperty(PigConfiguration.PIG_DELETE_TEMP_FILE, "true"))) {
             // Clean up all the intermediate data
             for (String path : intermediateVisitor.getIntermediate()) {
                 // Skip non-file system paths such as hbase, see PIG-3617
-                if (Utils.hasFileSystemImpl(new Path(path), conf)) {
+                if (HadoopShims.hasFileSystemImpl(new Path(path), conf)) {
                     FileLocalizer.delete(path, pc);
                 }
             }
@@ -451,7 +448,7 @@ public class MapReduceLauncher extends Launcher{
             Exception backendException = null;
             for (Job fj : failedJobs) {
                 try {
-                    getStats(fj, statsJobClient, true, pc);
+                    getStats(fj, true, pc);
                 } catch (Exception e) {
                     backendException = e;
                 }
@@ -487,13 +484,13 @@ public class MapReduceLauncher extends Launcher{
                         createSuccessFile(job, st);
                     } else {
                         log.debug("Successfully stored result in: \""
-                        		+ st.getSFile().getFileName() + "\"");
+                                + st.getSFile().getFileName() + "\"");
                     }
                 }
 
-                getStats(job, statsJobClient, false, pc);
+                getStats(job, false, pc);
                 if (aggregateWarning) {
-                    computeWarningAggregate(job, statsJobClient, warningAggMap);
+                    computeWarningAggregate(job, warningAggMap);
                 }
             }
 
@@ -630,6 +627,7 @@ public class MapReduceLauncher extends Launcher{
         MRCompiler comp = new MRCompiler(php, pc);
         comp.compile();
         comp.aggregateScalarsFiles();
+        comp.connectSoftLink();
         MROperPlan plan = comp.getMRPlan();
 
         //display the warning message(s) from the MRCompiler
@@ -637,7 +635,7 @@ public class MapReduceLauncher extends Launcher{
 
         String lastInputChunkSize =
                 pc.getProperties().getProperty(
-                        "last.input.chunksize", POJoinPackage.DEFAULT_CHUNK_SIZE);
+                        "last.input.chunksize", JoinPackager.DEFAULT_CHUNK_SIZE);
 
         String prop = pc.getProperties().getProperty(PigConfiguration.PROP_NO_COMBINER);
         if (!pc.inIllustrator && !("true".equals(prop)))  {
@@ -661,9 +659,9 @@ public class MapReduceLauncher extends Launcher{
             la.adjust();
         }
         // Optimize to use secondary sort key if possible
-        prop = pc.getProperties().getProperty("pig.exec.nosecondarykey");
+        prop = pc.getProperties().getProperty(PigConfiguration.PIG_EXEC_NO_SECONDARY_KEY);
         if (!pc.inIllustrator && !("true".equals(prop)))  {
-            SecondaryKeyOptimizer skOptimizer = new SecondaryKeyOptimizer(plan);
+            SecondaryKeyOptimizerMR skOptimizer = new SecondaryKeyOptimizerMR(plan);
             skOptimizer.visit();
         }
 
@@ -688,7 +686,7 @@ public class MapReduceLauncher extends Launcher{
         fRem.visit();
 
         boolean isMultiQuery =
-                "true".equalsIgnoreCase(pc.getProperties().getProperty("opt.multiquery","true"));
+            Boolean.valueOf(pc.getProperties().getProperty(PigConfiguration.OPT_MULTIQUERY, "true"));
 
         if (isMultiQuery) {
             // reduces the number of MROpers in the MR plan generated
@@ -710,7 +708,7 @@ public class MapReduceLauncher extends Launcher{
         checker.visit();
 
         boolean isAccum =
-                "true".equalsIgnoreCase(pc.getProperties().getProperty("opt.accumulator","true"));
+            Boolean.valueOf(pc.getProperties().getProperty("opt.accumulator","true"));
         if (isAccum) {
             AccumulatorOptimizer accum = new AccumulatorOptimizer(plan);
             accum.visit();
@@ -719,7 +717,7 @@ public class MapReduceLauncher extends Launcher{
     }
 
     private boolean shouldMarkOutputDir(Job job) {
-        return job.getJobConf().getBoolean(SUCCESSFUL_JOB_OUTPUT_DIR_MARKER,
+        return job.getJobConf().getBoolean(MRConfiguration.FILEOUTPUTCOMMITTER_MARKSUCCESSFULJOBS,
                 false);
     }
 
@@ -727,7 +725,7 @@ public class MapReduceLauncher extends Launcher{
         if(shouldMarkOutputDir(job)) {
             Path outputPath = new Path(store.getSFile().getFileName());
             String scheme = outputPath.toUri().getScheme();
-            if (Utils.hasFileSystemImpl(outputPath, job.getJobConf())) {
+            if (HadoopShims.hasFileSystemImpl(outputPath, job.getJobConf())) {
                 FileSystem fs = outputPath.getFileSystem(job.getJobConf());
                 if (fs.exists(outputPath)) {
                     // create a file in the folder to mark it
@@ -743,47 +741,41 @@ public class MapReduceLauncher extends Launcher{
     }
 
     @SuppressWarnings("deprecation")
-    void computeWarningAggregate(Job job, JobClient jobClient, Map<Enum, Long> aggMap) {
-        JobID mapRedJobID = job.getAssignedJobID();
-        RunningJob runningJob = null;
+    void computeWarningAggregate(Job job, Map<Enum, Long> aggMap) {
         try {
-            runningJob = jobClient.getJob(mapRedJobID);
-            if(runningJob != null) {
-                Counters counters = runningJob.getCounters();
-                if (counters==null)
-                {
-                    long nullCounterCount = aggMap.get(PigWarning.NULL_COUNTER_COUNT)==null?0 : aggMap.get(PigWarning.NULL_COUNTER_COUNT);
-                    nullCounterCount++;
-                    aggMap.put(PigWarning.NULL_COUNTER_COUNT, nullCounterCount);
-                }
-                try {
-                    for (Enum e : PigWarning.values()) {
-                        if (e != PigWarning.NULL_COUNTER_COUNT) {
-                            Long currentCount = aggMap.get(e);
-                            currentCount = (currentCount == null ? 0 : currentCount);
-                            // This code checks if the counters is null, if it is,
-                            // we need to report to the user that the number
-                            // of warning aggregations may not be correct. In fact,
-                            // Counters should not be null, it is
-                            // a hadoop bug, once this bug is fixed in hadoop, the
-                            // null handling code should never be hit.
-                            // See Pig-943
-                            if (counters != null)
-                                currentCount += counters.getCounter(e);
-                            aggMap.put(e, currentCount);
-                        }
-                    }
-                } catch (Exception e) {
-                    log.warn("Exception getting counters.", e);
+            Counters counters = HadoopShims.getCounters(job);
+            if (counters==null)
+            {
+                long nullCounterCount =
+                        (aggMap.get(PigWarning.NULL_COUNTER_COUNT) == null)
+                          ? 0
+                          : aggMap.get(PigWarning.NULL_COUNTER_COUNT);
+                nullCounterCount++;
+                aggMap.put(PigWarning.NULL_COUNTER_COUNT, nullCounterCount);
+            }
+            for (Enum e : PigWarning.values()) {
+                if (e != PigWarning.NULL_COUNTER_COUNT) {
+                    Long currentCount = aggMap.get(e);
+                    currentCount = (currentCount == null ? 0 : currentCount);
+                    // This code checks if the counters is null, if it is,
+                    // we need to report to the user that the number
+                    // of warning aggregations may not be correct. In fact,
+                    // Counters should not be null, it is
+                    // a hadoop bug, once this bug is fixed in hadoop, the
+                    // null handling code should never be hit.
+                    // See Pig-943
+                    if (counters != null)
+                        currentCount += counters.getCounter(e);
+                    aggMap.put(e, currentCount);
                 }
             }
-        } catch (IOException ioe) {
+        } catch (Exception e) {
             String msg = "Unable to retrieve job to compute warning aggregation.";
             log.warn(msg);
         }
     }
 
-    private void getStats(Job job, JobClient jobClient, boolean errNotDbg,
+    private void getStats(Job job, boolean errNotDbg,
             PigContext pigContext) throws ExecException {
         JobID MRJobID = job.getAssignedJobID();
         String jobMessage = job.getMessage();
@@ -791,10 +783,10 @@ public class MapReduceLauncher extends Launcher{
         if (MRJobID == null) {
             try {
                 LogUtils.writeLog(
-                		"Backend error message during job submission",
-                		jobMessage,
-                		pigContext.getProperties().getProperty("pig.logfile"),
-                		log);
+                        "Backend error message during job submission",
+                        jobMessage,
+                        pigContext.getProperties().getProperty("pig.logfile"),
+                        log);
                 backendException = getExceptionFromString(jobMessage);
             } catch (Exception e) {
                 int errCode = 2997;
@@ -805,14 +797,18 @@ public class MapReduceLauncher extends Launcher{
             throw new ExecException(backendException);
         }
         try {
-            TaskReport[] mapRep = jobClient.getMapTaskReports(MRJobID);
-            getErrorMessages(mapRep, "map", errNotDbg, pigContext);
-            totalHadoopTimeSpent += computeTimeSpent(mapRep);
-            mapRep = null;
-            TaskReport[] redRep = jobClient.getReduceTaskReports(MRJobID);
-            getErrorMessages(redRep, "reduce", errNotDbg, pigContext);
-            totalHadoopTimeSpent += computeTimeSpent(redRep);
-            redRep = null;
+            TaskReport[] mapRep = HadoopShims.getTaskReports(job, TaskType.MAP);
+            if (mapRep != null) {
+                getErrorMessages(mapRep, "map", errNotDbg, pigContext);
+                totalHadoopTimeSpent += computeTimeSpent(mapRep);
+                mapRep = null;
+            }
+            TaskReport[] redRep = HadoopShims.getTaskReports(job, TaskType.REDUCE);
+            if (redRep != null) {
+                getErrorMessages(redRep, "reduce", errNotDbg, pigContext);
+                totalHadoopTimeSpent += computeTimeSpent(redRep);
+                redRep = null;
+            }
         } catch (IOException e) {
             if (job.getState() == Job.SUCCESS) {
                 // if the job succeeded, let the user know that

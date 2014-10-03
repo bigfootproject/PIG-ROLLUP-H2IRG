@@ -76,7 +76,8 @@ import org.apache.pig.validator.BlackAndWhitelistFilter;
 import org.apache.pig.validator.PigCommandFilter;
 import org.fusesource.jansi.Ansi;
 import org.fusesource.jansi.AnsiConsole;
-import org.python.google.common.collect.Lists;
+
+import com.google.common.collect.Lists;
 
 public class GruntParser extends PigScriptParser {
 
@@ -176,7 +177,8 @@ public class GruntParser extends PigScriptParser {
                         mNumFailedJobs++;
                         Exception exp = (js.getException() != null) ? js.getException()
                                 : new ExecException(
-                                        "Job failed, hadoop does not return any error message",
+                                        "Job " + (js.getJobId() == null ? "" : js.getJobId() + " ") +
+                                        "failed, hadoop does not return any error message",
                                         2244);
                         LogUtils.writeLog(exp,
                                 mPigServer.getPigContext().getProperties().getProperty("pig.logfile"),
@@ -293,7 +295,9 @@ public class GruntParser extends PigScriptParser {
         String nestedAlias = null;
         if(mExplain == null) { // process only if not in "explain" mode
 
-            executeBatch();
+            if (mPigServer.isBatchOn()) {
+                mPigServer.parseAndBuild();
+            }
 
             if(alias==null) {
                 alias = mPigServer.getPigContext().getLastAlias();
@@ -359,12 +363,6 @@ public class GruntParser extends PigScriptParser {
             mExplain = new ExplainState(alias, target, script, isVerbose, format);
 
             if (script != null) {
-                if (!"true".equalsIgnoreCase(mPigServer.
-                                             getPigContext()
-                                             .getProperties().
-                                             getProperty("opt.multiquery","true"))) {
-                    throw new ParseException("Cannot explain script if multiquery is disabled.");
-                }
                 setBatchOn();
                 try {
                     loadScript(script, true, true, false, params, files);
@@ -1334,7 +1332,7 @@ public class GruntParser extends PigScriptParser {
     private int mNumSucceededJobs;
     private FsShell shell;
     private boolean mScriptIllustrate;
-    
+
     //For Testing Only
     protected void setExplainState(ExplainState explainState) {
         this.mExplain = explainState;
